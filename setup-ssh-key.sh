@@ -45,11 +45,14 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Get script directory (current directory)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 # Configuration
 SSH_DIR="$HOME/.ssh"
-KEY_NAME="id_ed25519_iot_gui"
-KEY_PATH="$SSH_DIR/$KEY_NAME"
-KEY_COMMENT="iot-gui-deploy@raspberrypi"
+KEY_NAME="id_ed25519_repo_pideployment"
+KEY_PATH="$SCRIPT_DIR/$KEY_NAME"
+KEY_COMMENT="repo-pideployment@raspberrypi"
 GITHUB_USER="thienanlktl"
 REPO_NAME="Pideployment"
 
@@ -60,17 +63,15 @@ echo "==========================================================================
 echo ""
 
 # ============================================================================
-# Step 1: Create .ssh directory if it doesn't exist
+# Step 1: Ensure script directory exists
 # ============================================================================
-print_info "Step 1: Checking SSH directory..."
+print_info "Step 1: Checking script directory..."
 
-if [ ! -d "$SSH_DIR" ]; then
-    print_info "Creating .ssh directory..."
-    mkdir -p "$SSH_DIR"
-    chmod 700 "$SSH_DIR"
-    print_success "SSH directory created"
+if [ ! -d "$SCRIPT_DIR" ]; then
+    print_error "Script directory does not exist: $SCRIPT_DIR"
+    exit 1
 else
-    print_info "SSH directory exists: $SSH_DIR"
+    print_info "Using script directory: $SCRIPT_DIR"
 fi
 
 # ============================================================================
@@ -131,9 +132,15 @@ print_success "Key permissions set correctly"
 # ============================================================================
 print_info "Step 5: Configuring SSH for GitHub..."
 
+# Create .ssh directory if it doesn't exist (for SSH config)
+if [ ! -d "$SSH_DIR" ]; then
+    mkdir -p "$SSH_DIR"
+    chmod 700 "$SSH_DIR"
+fi
+
 SSH_CONFIG="$SSH_DIR/config"
 GITHUB_HOST="github.com"
-CONFIG_ENTRY="Host github.com-iot-gui
+CONFIG_ENTRY="Host github.com-pideployment
     HostName github.com
     User git
     IdentityFile $KEY_PATH
@@ -141,7 +148,7 @@ CONFIG_ENTRY="Host github.com-iot-gui
 "
 
 # Check if config entry already exists
-if [ -f "$SSH_CONFIG" ] && grep -q "Host github.com-iot-gui" "$SSH_CONFIG" 2>/dev/null; then
+if [ -f "$SSH_CONFIG" ] && grep -q "Host github.com-pideployment" "$SSH_CONFIG" 2>/dev/null; then
     print_info "SSH config entry already exists"
 else
     print_info "Adding SSH config entry..."
@@ -154,7 +161,7 @@ else
     
     # Append config entry
     echo "" >> "$SSH_CONFIG"
-    echo "# GitHub Deploy Key for IoT Pub/Sub GUI" >> "$SSH_CONFIG"
+    echo "# GitHub Deploy Key for Pideployment Repository" >> "$SSH_CONFIG"
     echo "$CONFIG_ENTRY" >> "$SSH_CONFIG"
     
     print_success "SSH config updated"
@@ -195,11 +202,11 @@ echo ""
 echo "6. Click 'Add key'"
 echo ""
 echo "7. Test the connection:"
-echo "   ssh -T git@github.com-iot-gui"
+echo "   ssh -i $KEY_PATH -T git@github.com"
 echo ""
 echo "8. Update your git remote to use the SSH URL:"
-echo "   cd ~/PublishDemo"
-echo "   git remote set-url origin git@github.com-iot-gui:$GITHUB_USER/$REPO_NAME.git"
+echo "   cd $SCRIPT_DIR"
+echo "   git remote set-url origin git@github.com-pideployment:$GITHUB_USER/$REPO_NAME.git"
 echo "   OR"
 echo "   git remote set-url origin git@github.com:$GITHUB_USER/$REPO_NAME.git"
 echo ""

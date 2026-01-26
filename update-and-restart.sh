@@ -136,7 +136,7 @@ if [ -n "$GIT_REMOTE" ]; then
     
     # Check if using SSH and set up SSH key if needed
     if echo "$GIT_REMOTE" | grep -q "^git@"; then
-        SSH_KEY="$HOME/.ssh/id_ed25519_iot_gui"
+        SSH_KEY="$SCRIPT_DIR/id_ed25519_repo_pideployment"
         if [ -f "$SSH_KEY" ]; then
             print_info "Using SSH key for git operations: $SSH_KEY"
             export GIT_SSH_COMMAND="ssh -i $SSH_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=no"

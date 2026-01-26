@@ -178,7 +178,7 @@ echo "  - Webhook Port: $WEBHOOK_PORT"
 echo ""
 
 # Check if SSH key exists in current directory (before cloning)
-EXISTING_KEY="$SCRIPT_DIR/id_ed25519"
+EXISTING_KEY="$SCRIPT_DIR/id_ed25519_repo_pideployment"
 if [ -f "$EXISTING_KEY" ]; then
     print_info "Found existing SSH key in current directory: $EXISTING_KEY"
     print_info "Will automatically set it up and use it for SSH clone"
@@ -205,10 +205,10 @@ echo ""
 print_step "Step 0: Checking for Existing SSH Key"
 
 SSH_DIR="$HOME/.ssh"
-EXISTING_KEY="$SCRIPT_DIR/id_ed25519"
-EXISTING_KEY_PUB="$SCRIPT_DIR/id_ed25519.pub"
-KEY_NAME="id_ed25519_iot_gui"
-KEY_PATH="$SSH_DIR/$KEY_NAME"
+EXISTING_KEY="$SCRIPT_DIR/id_ed25519_repo_pideployment"
+EXISTING_KEY_PUB="$SCRIPT_DIR/id_ed25519_repo_pideployment.pub"
+KEY_NAME="id_ed25519_repo_pideployment"
+KEY_PATH="$SCRIPT_DIR/$KEY_NAME"
 USE_EXISTING_KEY=false
 
 # Check if SSH key exists in current directory
@@ -234,9 +234,9 @@ if [ "$USE_EXISTING_KEY" != true ] && [ -f "$EXISTING_KEY_PUB" ]; then
     
     # Check for private key in standard locations
     STANDARD_KEY_LOCATIONS=(
-        "$SSH_DIR/id_ed25519"
-        "$SSH_DIR/id_ed25519_iot_gui"
-        "$HOME/id_ed25519"
+        "$SCRIPT_DIR/id_ed25519_repo_pideployment"
+        "$SSH_DIR/id_ed25519_repo_pideployment"
+        "$HOME/id_ed25519_repo_pideployment"
     )
     
     PRIVATE_KEY_FOUND=""
@@ -259,10 +259,10 @@ if [ "$USE_EXISTING_KEY" != true ] && [ -f "$EXISTING_KEY_PUB" ]; then
             echo "  - $key_loc"
         done
         print_info "Will try to use existing key from ~/.ssh if available, or generate new key"
-        # Check if key already exists in .ssh
-        if [ -f "$SSH_DIR/id_ed25519" ]; then
-            print_info "Using existing key from ~/.ssh/id_ed25519"
-            PRIVATE_KEY_FOUND="$SSH_DIR/id_ed25519"
+        # Check if key already exists in current directory
+        if [ -f "$SCRIPT_DIR/id_ed25519_repo_pideployment" ]; then
+            print_info "Using existing key from current directory: $SCRIPT_DIR/id_ed25519_repo_pideployment"
+            PRIVATE_KEY_FOUND="$SCRIPT_DIR/id_ed25519_repo_pideployment"
             USE_EXISTING_KEY=true
         fi
     fi
@@ -277,16 +277,16 @@ if [ "$USE_EXISTING_KEY" = true ]; then
         chmod 700 "$SSH_DIR"
     fi
     
-    # Copy key to .ssh directory if it's not already there
+    # Use key from current directory directly
     if [ -f "$EXISTING_KEY" ]; then
         # Private key is in current directory
         print_info "Setting up SSH key for git operations..."
-        cp "$EXISTING_KEY" "$KEY_PATH"
+        # Use key directly from current directory, no need to copy
+        KEY_PATH="$EXISTING_KEY"
         chmod 600 "$KEY_PATH"
         
         if [ -f "$EXISTING_KEY_PUB" ]; then
-            cp "$EXISTING_KEY_PUB" "$KEY_PATH.pub"
-            chmod 644 "$KEY_PATH.pub"
+            chmod 644 "$EXISTING_KEY_PUB"
         else
             # Try to generate public key from private key
             print_info "Generating public key from private key..."
@@ -301,36 +301,23 @@ if [ "$USE_EXISTING_KEY" = true ]; then
         # Private key found in standard location
         print_info "Using existing private key from: $PRIVATE_KEY_FOUND"
         
-        # Copy or link to our key path
-        if [ "$PRIVATE_KEY_FOUND" != "$KEY_PATH" ]; then
-            cp "$PRIVATE_KEY_FOUND" "$KEY_PATH"
-            chmod 600 "$KEY_PATH"
-            
-            # Copy public key - prefer the one from current directory
-            if [ -f "$EXISTING_KEY_PUB" ]; then
-                # Use public key from current directory
-                cp "$EXISTING_KEY_PUB" "$KEY_PATH.pub"
-                chmod 644 "$KEY_PATH.pub"
-                print_success "Using public key from current directory"
-            elif [ -f "$PRIVATE_KEY_FOUND.pub" ]; then
-                cp "$PRIVATE_KEY_FOUND.pub" "$KEY_PATH.pub"
-                chmod 644 "$KEY_PATH.pub"
-            else
-                # Generate public key
-                print_info "Generating public key from private key..."
-                if ssh-keygen -y -f "$KEY_PATH" > "$KEY_PATH.pub" 2>/dev/null; then
-                    chmod 644 "$KEY_PATH.pub"
-                    print_success "Public key generated"
-                fi
-            fi
+        # Use key directly from found location
+        KEY_PATH="$PRIVATE_KEY_FOUND"
+        chmod 600 "$KEY_PATH"
+        
+        # Check for public key
+        if [ -f "$EXISTING_KEY_PUB" ]; then
+            # Use public key from current directory
+            chmod 644 "$EXISTING_KEY_PUB"
+            print_success "Using public key from current directory"
+        elif [ -f "$PRIVATE_KEY_FOUND.pub" ]; then
+            chmod 644 "$PRIVATE_KEY_FOUND.pub"
         else
-            # Key already at target location
-            print_info "Key already at target location: $KEY_PATH"
-            # Still copy public key from current directory if it exists
-            if [ -f "$EXISTING_KEY_PUB" ]; then
-                cp "$EXISTING_KEY_PUB" "$KEY_PATH.pub"
+            # Generate public key
+            print_info "Generating public key from private key..."
+            if ssh-keygen -y -f "$KEY_PATH" > "$KEY_PATH.pub" 2>/dev/null; then
                 chmod 644 "$KEY_PATH.pub"
-                print_success "Updated public key from current directory"
+                print_success "Public key generated"
             fi
         fi
     fi
@@ -338,14 +325,14 @@ if [ "$USE_EXISTING_KEY" = true ]; then
     # Configure SSH config (only if we have a key)
     if [ "$USE_EXISTING_KEY" = true ] && [ -f "$KEY_PATH" ]; then
         SSH_CONFIG="$SSH_DIR/config"
-        CONFIG_ENTRY="Host github.com-iot-gui
+        CONFIG_ENTRY="Host github.com-pideployment
     HostName github.com
     User git
     IdentityFile $KEY_PATH
     IdentitiesOnly yes
 "
         
-        if [ ! -f "$SSH_CONFIG" ] || ! grep -q "Host github.com-iot-gui" "$SSH_CONFIG" 2>/dev/null; then
+        if [ ! -f "$SSH_CONFIG" ] || ! grep -q "Host github.com-pideployment" "$SSH_CONFIG" 2>/dev/null; then
             print_info "Configuring SSH for GitHub..."
             if [ ! -f "$SSH_CONFIG" ]; then
                 touch "$SSH_CONFIG"
@@ -397,60 +384,72 @@ if [ "$CLONE_REPO" = true ]; then
         print_info "Cloning repository from GitHub..."
         
         # Use SSH if we have a working key, otherwise HTTPS
-        if [ "$USE_EXISTING_KEY" = true ]; then
-            SSH_REPO_URL="git@github.com-iot-gui:$GITHUB_USER/$REPO_NAME.git"
-            print_info "Using SSH with existing key..."
+        if [ "$USE_EXISTING_KEY" = true ] && [ -f "$KEY_PATH" ]; then
+            print_info "Using SSH with existing key: $KEY_PATH"
             
-            # Try SSH clone with the key
-            if GIT_SSH_COMMAND="ssh -i $KEY_PATH -o IdentitiesOnly=yes -o StrictHostKeyChecking=no" git clone "$SSH_REPO_URL" "$PROJECT_DIR" 2>/dev/null; then
-                print_success "Repository cloned successfully via SSH"
+            # Verify key file permissions
+            if [ ! -r "$KEY_PATH" ]; then
+                print_warning "SSH key file is not readable, fixing permissions..."
+                chmod 600 "$KEY_PATH" || print_warning "Could not fix key permissions"
+            fi
+            
+            # Try SSH clone with custom host alias first
+            SSH_REPO_URL="git@github.com-pideployment:$GITHUB_USER/$REPO_NAME.git"
+            print_info "Attempting SSH clone with custom host alias..."
+            CLONE_OUTPUT=$(GIT_SSH_COMMAND="ssh -i $KEY_PATH -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10" git clone "$SSH_REPO_URL" "$PROJECT_DIR" 2>&1)
+            CLONE_EXIT_CODE=$?
+            
+            if [ $CLONE_EXIT_CODE -eq 0 ]; then
+                print_success "Repository cloned successfully via SSH (custom host)"
                 cd "$PROJECT_DIR" || exit 1
                 SCRIPT_DIR="$PROJECT_DIR"
-            elif [ "$SSH_WORKING" = true ]; then
-                # If SSH test passed but clone failed, try standard SSH URL
+            else
+                # Try standard SSH URL
                 SSH_REPO_URL_STD="git@github.com:$GITHUB_USER/$REPO_NAME.git"
-                print_info "Trying standard SSH URL..."
-                if GIT_SSH_COMMAND="ssh -i $KEY_PATH -o IdentitiesOnly=yes -o StrictHostKeyChecking=no" git clone "$SSH_REPO_URL_STD" "$PROJECT_DIR" 2>/dev/null; then
+                print_info "Custom host failed, trying standard SSH URL..."
+                print_info "Error from previous attempt: $(echo "$CLONE_OUTPUT" | tail -1)"
+                
+                CLONE_OUTPUT=$(GIT_SSH_COMMAND="ssh -i $KEY_PATH -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10" git clone "$SSH_REPO_URL_STD" "$PROJECT_DIR" 2>&1)
+                CLONE_EXIT_CODE=$?
+                
+                if [ $CLONE_EXIT_CODE -eq 0 ]; then
                     print_success "Repository cloned successfully via SSH (standard URL)"
                     cd "$PROJECT_DIR" || exit 1
                     SCRIPT_DIR="$PROJECT_DIR"
                 else
-                    print_warning "SSH clone failed, trying HTTPS..."
+                    # Show error for debugging
+                    print_warning "SSH clone failed with exit code: $CLONE_EXIT_CODE"
+                    print_info "Last error: $(echo "$CLONE_OUTPUT" | tail -1)"
+                    print_warning "SSH key may not be added to GitHub yet, trying HTTPS..."
+                    
+                    # Fallback to HTTPS
                     HTTPS_REPO_URL="https://github.com/$GITHUB_USER/$REPO_NAME.git"
-                    if git clone "$HTTPS_REPO_URL" "$PROJECT_DIR"; then
+                    print_info "Attempting HTTPS clone..."
+                    if git clone "$HTTPS_REPO_URL" "$PROJECT_DIR" 2>&1; then
                         print_success "Repository cloned successfully via HTTPS"
+                        print_info "After adding SSH key to GitHub, you can switch to SSH remote"
                         cd "$PROJECT_DIR" || exit 1
                         SCRIPT_DIR="$PROJECT_DIR"
                     else
-                        print_error "Failed to clone repository"
+                        print_error "Failed to clone repository via HTTPS as well"
                         print_info "Make sure you have internet connection and the repository exists"
+                        print_info "Repository URL: $HTTPS_REPO_URL"
                         exit 1
                     fi
                 fi
-            else
-                print_warning "SSH key may not be added to GitHub yet, trying HTTPS..."
-                HTTPS_REPO_URL="https://github.com/$GITHUB_USER/$REPO_NAME.git"
-                if git clone "$HTTPS_REPO_URL" "$PROJECT_DIR"; then
-                    print_success "Repository cloned successfully via HTTPS"
-                    print_info "After adding SSH key to GitHub, you can switch to SSH remote"
-                    cd "$PROJECT_DIR" || exit 1
-                    SCRIPT_DIR="$PROJECT_DIR"
-                else
-                    print_error "Failed to clone repository"
-                    print_info "Make sure you have internet connection and the repository exists"
-                    exit 1
-                fi
             fi
         else
+            # No SSH key available, use HTTPS
             HTTPS_REPO_URL="https://github.com/$GITHUB_USER/$REPO_NAME.git"
-            print_info "Using HTTPS for initial clone..."
-            if git clone "$HTTPS_REPO_URL" "$PROJECT_DIR"; then
-                print_success "Repository cloned successfully"
+            print_info "No SSH key available, using HTTPS for initial clone..."
+            if git clone "$HTTPS_REPO_URL" "$PROJECT_DIR" 2>&1; then
+                print_success "Repository cloned successfully via HTTPS"
                 cd "$PROJECT_DIR" || exit 1
                 SCRIPT_DIR="$PROJECT_DIR"
             else
                 print_error "Failed to clone repository"
                 print_info "Make sure you have internet connection and the repository exists"
+                print_info "Repository URL: $HTTPS_REPO_URL"
                 exit 1
             fi
         fi
@@ -716,9 +715,9 @@ if [ "$USE_EXISTING_KEY" = true ] && [ -f "$KEY_PATH" ]; then
 else
     # Generate new SSH key if needed
     SSH_DIR="$HOME/.ssh"
-    KEY_NAME="id_ed25519_iot_gui"
-    KEY_PATH="$SSH_DIR/$KEY_NAME"
-    KEY_COMMENT="iot-gui-deploy@raspberrypi"
+    KEY_NAME="id_ed25519_repo_pideployment"
+    KEY_PATH="$SCRIPT_DIR/$KEY_NAME"
+    KEY_COMMENT="repo-pideployment@raspberrypi"
     
     # Create .ssh directory if needed
     if [ ! -d "$SSH_DIR" ]; then
@@ -748,21 +747,21 @@ else
         
         # Configure SSH config
         SSH_CONFIG="$SSH_DIR/config"
-        CONFIG_ENTRY="Host github.com-iot-gui
+        CONFIG_ENTRY="Host github.com-pideployment
     HostName github.com
     User git
     IdentityFile $KEY_PATH
     IdentitiesOnly yes
 "
         
-        if [ ! -f "$SSH_CONFIG" ] || ! grep -q "Host github.com-iot-gui" "$SSH_CONFIG" 2>/dev/null; then
+        if [ ! -f "$SSH_CONFIG" ] || ! grep -q "Host github.com-pideployment" "$SSH_CONFIG" 2>/dev/null; then
             print_info "Configuring SSH for GitHub..."
             if [ ! -f "$SSH_CONFIG" ]; then
                 touch "$SSH_CONFIG"
                 chmod 600 "$SSH_CONFIG"
             fi
             echo "" >> "$SSH_CONFIG"
-            echo "# GitHub Deploy Key for IoT Pub/Sub GUI" >> "$SSH_CONFIG"
+            echo "# GitHub Deploy Key for Pideployment Repository" >> "$SSH_CONFIG"
             echo "$CONFIG_ENTRY" >> "$SSH_CONFIG"
             print_success "SSH config updated"
         fi
@@ -820,7 +819,7 @@ if [ "$UPDATE_REMOTE" = true ]; then
     print_info "Setting git remote URL..."
     
     SSH_URL="git@github.com:$GITHUB_USER/$REPO_NAME.git"
-    ALT_SSH_URL="git@github.com-iot-gui:$GITHUB_USER/$REPO_NAME.git"
+    ALT_SSH_URL="git@github.com-pideployment:$GITHUB_USER/$REPO_NAME.git"
     HTTPS_URL="https://github.com/$GITHUB_USER/$REPO_NAME.git"
     
     # Auto-select SSH if we have a working key, otherwise use HTTPS
@@ -1519,7 +1518,7 @@ fi
 if [ -z "$SSH_KEY_ADDED" ] || [ "$SSH_KEY_ADDED" != true ]; then
     echo "3. Add SSH public key to GitHub (if not done already):"
     echo "   https://github.com/$GITHUB_USER/$REPO_NAME/settings/keys"
-    echo "   Public key: $(cat ~/.ssh/id_ed25519_iot_gui.pub 2>/dev/null || echo 'Run setup-ssh-key.sh first')"
+    echo "   Public key: $(cat $SCRIPT_DIR/id_ed25519_repo_pideployment.pub 2>/dev/null || echo 'Run setup-ssh-key.sh first')"
     echo ""
 fi
 if [ "$SERVICE_INSTALLED" = true ]; then
@@ -1671,7 +1670,7 @@ else
     if [ -z "$SSH_KEY_ADDED" ] || [ "$SSH_KEY_ADDED" != true ]; then
         echo "3. Add SSH public key to GitHub (if not done already):"
         echo "   https://github.com/$GITHUB_USER/$REPO_NAME/settings/keys"
-        echo "   Public key: $(cat ~/.ssh/id_ed25519_iot_gui.pub 2>/dev/null || echo 'Run setup-ssh-key.sh first')"
+        echo "   Public key: $(cat $SCRIPT_DIR/id_ed25519_repo_pideployment.pub 2>/dev/null || echo 'Run setup-ssh-key.sh first')"
         echo ""
     fi
     if [ "$ALL_SYSTEMS_GO" != true ]; then

@@ -146,7 +146,7 @@ fi
 # Test 5: Check SSH key
 print_info ""
 print_info "Test 5: Checking SSH key..."
-SSH_KEY="$HOME/.ssh/id_ed25519_iot_gui"
+SSH_KEY="$SCRIPT_DIR/id_ed25519_repo_pideployment"
 if [ -f "$SSH_KEY" ]; then
     print_success "SSH key exists: $SSH_KEY"
     ((TESTS_PASSED++))
@@ -161,7 +161,7 @@ if [ -f "$SSH_KEY" ]; then
         ((TESTS_FAILED++))
     fi
 else
-    print_warning "SSH key not found (run: ./setup-ssh-key.sh)"
+    print_warning "SSH key not found in current directory: $SSH_KEY (run: ./setup-ssh-key.sh)"
     ((TESTS_FAILED++))
 fi
 
