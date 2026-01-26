@@ -1421,7 +1421,7 @@ fi
 if [ -z "$SSH_KEY_ADDED" ] || [ "$SSH_KEY_ADDED" != true ]; then
     echo "2. Add SSH public key to GitHub (if not done already):"
     echo "   https://github.com/$GITHUB_USER/$REPO_NAME/settings/keys"
-    echo "   Public key: $(cat $SCRIPT_DIR/id_ed25519_repo_pideployment.pub 2>/dev/null || echo 'Run setup-ssh-key.sh first')"
+    echo "   Public key: $(cat $CURRENT_DIR/id_ed25519_repo_pideployment.pub 2>/dev/null || echo 'Run setup-ssh-key.sh first')"
     echo ""
 fi
 if [ "$SERVICE_INSTALLED" = true ]; then
