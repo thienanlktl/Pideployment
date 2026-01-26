@@ -10,7 +10,7 @@
 #   ./create-github-webhook.sh
 #
 # Requirements:
-#   - GitHub Personal Access Token (with repo access)
+#   - GitHub Personal Access Token (hardcoded in script, or from env/file)
 #   - ngrok URL (from ./get-ngrok-url.sh)
 #   - Webhook secret (from .webhook_secret file)
 # ============================================================================
@@ -70,6 +70,9 @@ NGROK_URL_FILE="$PROJECT_DIR/.ngrok_url"
 # Hardcoded ngrok public URL for GitHub webhook setup
 HARDCODED_NGROK_URL="https://tardy-vernita-howlingly.ngrok-free.dev"
 
+# Hardcoded GitHub Personal Access Token
+HARDCODED_GITHUB_TOKEN="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"
+
 echo ""
 print_step "Automatically Create GitHub Webhook"
 
@@ -78,10 +81,13 @@ print_step "Automatically Create GitHub Webhook"
 # ============================================================================
 print_step "Step 1: GitHub Authentication"
 
-# Check for token in environment variable
+# Check for token: environment variable, hardcoded token, or .github_token file
 if [ -n "$GITHUB_TOKEN" ]; then
     print_info "Using GitHub token from environment variable"
     GITHUB_TOKEN="$GITHUB_TOKEN"
+elif [ -n "$HARDCODED_GITHUB_TOKEN" ]; then
+    GITHUB_TOKEN="$HARDCODED_GITHUB_TOKEN"
+    print_info "Using hardcoded GitHub token"
 elif [ -f "$PROJECT_DIR/.github_token" ]; then
     GITHUB_TOKEN=$(cat "$PROJECT_DIR/.github_token" 2>/dev/null)
     if [ -n "$GITHUB_TOKEN" ]; then

@@ -12,8 +12,8 @@
 #   6. Webhook listener setup
 #   7. Systemd service installation
 #   8. Testing and verification
-#   9. ngrok setup with pre-configured token
-#   10. GitHub webhook creation (uses .github_token if available)
+#   9. Webhook URL configuration (uses existing ngrok tunnel)
+#   10. GitHub webhook creation (uses hardcoded token or .github_token if available)
 #
 # Usage:
 #   Option 1: Run from any directory (will clone repo)
@@ -25,6 +25,7 @@
 #     ./setup-deployment-from-scratch.sh
 #
 #   Option 3: With GitHub token (for auto webhook creation)
+#     Token is hardcoded in script, or:
 #     export GITHUB_TOKEN="your_token"
 #     ./setup-deployment-from-scratch.sh
 #     OR place token in .github_token file in project directory
@@ -139,6 +140,9 @@ WEBHOOK_PORT="${WEBHOOK_PORT:-9000}"
 
 # Hardcoded ngrok public URL for GitHub webhook setup
 HARDCODED_NGROK_URL="https://tardy-vernita-howlingly.ngrok-free.dev"
+
+# Hardcoded GitHub Personal Access Token
+HARDCODED_GITHUB_TOKEN="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"
 
 # Determine project directory
 # If we're in a git repo, use current directory, otherwise we'll clone
@@ -1063,204 +1067,36 @@ else
 fi
 
 # ============================================================================
-# Step 11: Webhook Setup Information
+# Step 11: Configure Webhook URL (ngrok already set up)
 # ============================================================================
-print_step "Step 11: Webhook Setup Information"
+print_step "Step 11: Configuring Webhook URL"
 
-print_info "We'll use ngrok to create a public URL for GitHub webhooks"
-print_info "No router configuration needed - everything runs on Pi!"
+print_info "Using existing ngrok tunnel: $HARDCODED_NGROK_URL"
+print_info "ngrok tunnel is already configured and running"
 echo ""
 
-# ============================================================================
-# Step 12: Setup ngrok for webhook access (no router config needed!)
-# ============================================================================
-print_step "Step 12: Setting Up ngrok Tunnel"
+# Set webhook URL from hardcoded ngrok URL
+NGROK_SETUP_SUCCESS=true
+NGROK_URL="$HARDCODED_NGROK_URL"
 
-print_info "Using ngrok to create secure tunnel - no router configuration needed!"
-print_info "ngrok creates a public URL that forwards to your Pi's webhook"
-echo ""
-
-NGROK_SETUP_SUCCESS=false
-WEBHOOK_URL=""
-
-# First, check if ngrok endpoint is already online
-print_info "Checking if ngrok endpoint is already online..."
-NGROK_ALREADY_ONLINE=false
-
-# Check if ngrok process is running
-if pgrep -f "ngrok" >/dev/null 2>&1; then
-    print_info "ngrok process found, checking if tunnel is active..."
-    
-    # Try multiple ports (4040 is default, 4041 is fallback)
-    NGROK_WEB_PORT=""
-    for port in 4040 4041 4042 4043 4044; do
-        if curl -s --max-time 2 http://localhost:$port/api/tunnels >/dev/null 2>&1; then
-            NGROK_WEB_PORT="$port"
-            print_info "Found ngrok API on port $port"
-            break
-        fi
-    done
-    
-    if [ -n "$NGROK_WEB_PORT" ]; then
-        sleep 1
-        # Try to get the tunnel URL
-        EXISTING_NGROK_URL=$(curl -s --max-time 3 http://localhost:$NGROK_WEB_PORT/api/tunnels 2>/dev/null | \
-            grep -o '"public_url":"https://[^"]*' | head -1 | sed 's/"public_url":"//')
-        
-        if [ -n "$EXISTING_NGROK_URL" ]; then
-            # Verify it's pointing to the correct port
-            TUNNEL_INFO=$(curl -s --max-time 3 http://localhost:$NGROK_WEB_PORT/api/tunnels 2>/dev/null)
-            if echo "$TUNNEL_INFO" | grep -q "\"addr\":\"localhost:$WEBHOOK_PORT\"" || \
-               echo "$TUNNEL_INFO" | grep -q "\"addr\":\"127.0.0.1:$WEBHOOK_PORT\""; then
-                print_success "ngrok endpoint is already online!"
-                print_info "Existing tunnel URL: $EXISTING_NGROK_URL"
-                
-                # Set webhook URL (ensure /webhook suffix)
-                if echo "$EXISTING_NGROK_URL" | grep -q "/webhook$"; then
-                    WEBHOOK_URL="$EXISTING_NGROK_URL"
-                else
-                    WEBHOOK_URL="$EXISTING_NGROK_URL/webhook"
-                fi
-                NGROK_URL="$EXISTING_NGROK_URL"
-                
-                # Save URL to file
-                echo "$WEBHOOK_URL" > "$PROJECT_DIR/.ngrok_url"
-                print_success "URL saved to: $PROJECT_DIR/.ngrok_url"
-                
-                NGROK_ALREADY_ONLINE=true
-                NGROK_SETUP_SUCCESS=true
-                print_success "Using existing ngrok endpoint - no setup needed"
-            else
-                print_warning "Existing tunnel may not be configured for port $WEBHOOK_PORT"
-                print_info "Will set up ngrok to ensure correct configuration"
-            fi
-        else
-            print_warning "ngrok is running but no active tunnel found"
-            print_info "Will set up ngrok"
-        fi
-    else
-        print_warning "ngrok process found but API not responding on any port"
-        print_info "Will set up ngrok"
-    fi
+# Ensure webhook URL has /webhook suffix
+if echo "$HARDCODED_NGROK_URL" | grep -q "/webhook$"; then
+    WEBHOOK_URL="$HARDCODED_NGROK_URL"
 else
-    print_info "No ngrok process found, will set up ngrok"
+    WEBHOOK_URL="$HARDCODED_NGROK_URL/webhook"
 fi
 
-# If ngrok is already online, skip setup
-if [ "$NGROK_ALREADY_ONLINE" = true ]; then
-    print_info "Skipping ngrok setup - endpoint is already online"
-    echo ""
-else
-    # Check if ngrok setup script exists
-    if [ -f "$PROJECT_DIR/setup-ngrok.sh" ]; then
-        print_info "Running ngrok setup..."
-        chmod +x "$PROJECT_DIR/setup-ngrok.sh"
-        
-        # Check if authtoken is provided via environment variable or use default
-        if [ -z "$NGROK_AUTHTOKEN" ]; then
-            # Use the pre-configured token automatically
-            NGROK_AUTHTOKEN="38HbghqIwfeBRpp4wdZHFkeTOT1_2Dh6671w4NZEUoFMpcVa6"
-            print_info "Using pre-configured ngrok authtoken automatically"
-        else
-            print_info "Using ngrok authtoken from environment variable"
-        fi
-        
-        # Set tunnel port for ngrok setup
-        export TUNNEL_PORT="$WEBHOOK_PORT"
-        export PROJECT_DIR="$PROJECT_DIR"
-        
-        # Run ngrok setup with token (non-interactive)
-        # Use force run mode to disable web interface if ports are blocked
-        print_info "Setting up ngrok automatically (force run mode enabled)..."
-        if cd "$PROJECT_DIR" && NGROK_AUTHTOKEN="$NGROK_AUTHTOKEN" NGROK_FORCE_RUN=true TUNNEL_PORT="$WEBHOOK_PORT" PROJECT_DIR="$PROJECT_DIR" "$PROJECT_DIR/setup-ngrok.sh" "$NGROK_AUTHTOKEN" >/dev/null 2>&1; then
-            NGROK_SETUP_SUCCESS=true
-            print_success "ngrok setup completed"
-        else
-            # Try again with output visible for debugging
-            print_info "Retrying ngrok setup with visible output..."
-            if cd "$PROJECT_DIR" && NGROK_AUTHTOKEN="$NGROK_AUTHTOKEN" NGROK_FORCE_RUN=true TUNNEL_PORT="$WEBHOOK_PORT" PROJECT_DIR="$PROJECT_DIR" "$PROJECT_DIR/setup-ngrok.sh" "$NGROK_AUTHTOKEN"; then
-                NGROK_SETUP_SUCCESS=true
-                print_success "ngrok setup completed"
-            else
-                print_warning "ngrok setup had issues - will retry getting URL"
-                NGROK_SETUP_SUCCESS=false
-            fi
-        fi
-        
-        # Wait for ngrok to start and get URL
-        print_info "Waiting for ngrok to start and get public URL..."
-        
-        # Start ngrok service if not running
-        if ! sudo systemctl is-active --quiet iot-gui-ngrok.service 2>/dev/null; then
-            print_info "Starting ngrok service..."
-            sudo systemctl start iot-gui-ngrok.service 2>/dev/null || true
-            sleep 3
-        fi
-        
-        # Try to get ngrok URL with retries
-        MAX_RETRIES=20
-        RETRY_COUNT=0
-        NGROK_URL=""
-        while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            sleep 2
-            # Try multiple ports to find ngrok API
-            for port in 4040 4041 4042 4043 4044; do
-                if curl -s --max-time 2 http://localhost:$port/api/tunnels >/dev/null 2>&1; then
-                    NGROK_URL=$(curl -s --max-time 3 http://localhost:$port/api/tunnels 2>/dev/null | \
-                        grep -o '"public_url":"https://[^"]*' | head -1 | sed 's/"public_url":"//')
-                    if [ -n "$NGROK_URL" ]; then
-                        # Ensure webhook URL has /webhook suffix
-                        if echo "$NGROK_URL" | grep -q "/webhook$"; then
-                            WEBHOOK_URL="$NGROK_URL"
-                        else
-                            WEBHOOK_URL="$NGROK_URL/webhook"
-                        fi
-                        echo "$WEBHOOK_URL" > "$PROJECT_DIR/.ngrok_url"
-                        print_success "ngrok tunnel is active!"
-                        print_success "Public URL obtained: $WEBHOOK_URL"
-                        NGROK_SETUP_SUCCESS=true
-                        break 2
-                    fi
-                fi
-            done
-            
-            RETRY_COUNT=$((RETRY_COUNT + 1))
-            if [ $((RETRY_COUNT % 3)) -eq 0 ]; then
-                print_info "Waiting for ngrok URL... (attempt $RETRY_COUNT/$MAX_RETRIES)"
-            fi
-        done
-        
-        # Use hardcoded URL if available and we couldn't get URL from API
-        if [ -z "$WEBHOOK_URL" ] && [ -n "$HARDCODED_NGROK_URL" ]; then
-            print_info "Using hardcoded ngrok URL: $HARDCODED_NGROK_URL"
-            if echo "$HARDCODED_NGROK_URL" | grep -q "/webhook$"; then
-                WEBHOOK_URL="$HARDCODED_NGROK_URL"
-            else
-                WEBHOOK_URL="$HARDCODED_NGROK_URL/webhook"
-            fi
-            echo "$WEBHOOK_URL" > "$PROJECT_DIR/.ngrok_url"
-            print_success "Using hardcoded webhook URL: $WEBHOOK_URL"
-            NGROK_SETUP_SUCCESS=true
-        elif [ -z "$WEBHOOK_URL" ]; then
-            print_warning "Could not get ngrok URL automatically after $MAX_RETRIES attempts"
-            print_info "Checking ngrok service status..."
-            sudo systemctl status iot-gui-ngrok.service --no-pager -l | head -10 || true
-            print_info "You can get URL manually: ./get-ngrok-url.sh"
-            NGROK_SETUP_SUCCESS=false
-        fi
-    else
-        print_warning "setup-ngrok.sh not found"
-        print_info "You can set up ngrok manually or use cron fallback"
-        print_info "Cron fallback: ./setup-cron-fallback.sh"
-    fi
-fi  # End of else block for NGROK_ALREADY_ONLINE check
+# Save URL to file
+echo "$WEBHOOK_URL" > "$PROJECT_DIR/.ngrok_url"
+print_success "Webhook URL configured: $WEBHOOK_URL"
+print_success "URL saved to: $PROJECT_DIR/.ngrok_url"
 
 echo ""
 
 # ============================================================================
-# Step 13: Create GitHub Webhook Automatically
+# Step 12: Create GitHub Webhook Automatically
 # ============================================================================
-print_step "Step 13: Creating GitHub Webhook"
+print_step "Step 12: Creating GitHub Webhook"
 
 WEBHOOK_CREATED=false
 
@@ -1279,22 +1115,25 @@ if [ -n "$WEBHOOK_URL" ] && [ -f "$PROJECT_DIR/create-github-webhook.sh" ]; then
         print_info "Updated webhook URL to: $WEBHOOK_URL"
     fi
     
-    # If webhook URL is still empty, try hardcoded URL
-    if [ -z "$WEBHOOK_URL" ] && [ -n "$HARDCODED_NGROK_URL" ]; then
-        print_info "Using hardcoded ngrok URL: $HARDCODED_NGROK_URL"
+    # Webhook URL should already be set from Step 11
+    if [ -z "$WEBHOOK_URL" ]; then
+        print_warning "Webhook URL not set, using hardcoded URL"
         if echo "$HARDCODED_NGROK_URL" | grep -q "/webhook$"; then
             WEBHOOK_URL="$HARDCODED_NGROK_URL"
         else
             WEBHOOK_URL="$HARDCODED_NGROK_URL/webhook"
         fi
         echo "$WEBHOOK_URL" > "$PROJECT_DIR/.ngrok_url"
-        print_success "Using hardcoded webhook URL: $WEBHOOK_URL"
+        print_info "Using webhook URL: $WEBHOOK_URL"
     fi
     
-    # Check for GitHub token: environment variable, .github_token file, or default
+    # Check for GitHub token: environment variable, hardcoded token, or .github_token file
     if [ -z "$GITHUB_TOKEN" ]; then
-        # Check for token file in project directory
-        if [ -f "$PROJECT_DIR/.github_token" ]; then
+        # Use hardcoded token if available
+        if [ -n "$HARDCODED_GITHUB_TOKEN" ]; then
+            GITHUB_TOKEN="$HARDCODED_GITHUB_TOKEN"
+            print_info "Using hardcoded GitHub token"
+        elif [ -f "$PROJECT_DIR/.github_token" ]; then
             GITHUB_TOKEN=$(cat "$PROJECT_DIR/.github_token" 2>/dev/null | tr -d '\n\r ')
             if [ -n "$GITHUB_TOKEN" ]; then
                 print_info "Using GitHub token from .github_token file"
@@ -1370,10 +1209,10 @@ if [ -n "$WEBHOOK_URL" ] && [ -f "$PROJECT_DIR/create-github-webhook.sh" ]; then
         fi
     else
         print_warning "GitHub token not provided - webhook creation skipped"
-        print_info "To enable automatic webhook creation:"
-        print_info "  1. Get token: https://github.com/settings/tokens (scope: repo)"
-        print_info "  2. Set: export GITHUB_TOKEN=your_token"
-        print_info "  3. Or save: echo 'your_token' > .github_token"
+        print_info "Note: Hardcoded token should be available in script"
+        print_info "If webhook creation fails, check token in script or:"
+        print_info "  1. Set: export GITHUB_TOKEN=your_token"
+        print_info "  2. Or save: echo 'your_token' > .github_token"
         print_info "  4. Then run: ./create-github-webhook.sh"
         print_info ""
         print_info "Or create webhook manually at:"
@@ -1396,9 +1235,9 @@ fi
 echo ""
 
 # ============================================================================
-# Step 14: Test the setup
+# Step 13: Test the setup
 # ============================================================================
-print_step "Step 14: Testing Setup"
+print_step "Step 13: Testing Setup"
 
 if [ -f "$PROJECT_DIR/test-deployment.sh" ]; then
     print_info "Running deployment test..."
@@ -1436,9 +1275,9 @@ fi
 echo ""
 
 # ============================================================================
-# Step 15: Start the application
+# Step 14: Start the application
 # ============================================================================
-print_step "Step 15: Starting Application"
+print_step "Step 14: Starting Application"
 
 APP_FILE="$PROJECT_DIR/iot_pubsub_gui.py"
 PID_FILE="$PROJECT_DIR/app.pid"
@@ -1546,8 +1385,8 @@ echo "  ✓ Scripts made executable"
 if [ "$SERVICE_INSTALLED" = true ]; then
     echo "  ✓ Webhook listener service installed and running"
 fi
-if [ "$NGROK_SETUP_SUCCESS" = true ]; then
-    echo "  ✓ ngrok tunnel configured and running"
+if [ -n "$WEBHOOK_URL" ]; then
+    echo "  ✓ Webhook URL configured (ngrok tunnel already set up)"
 fi
 if [ "$WEBHOOK_CREATED" = true ]; then
     echo "  ✓ GitHub webhook created"
@@ -1560,40 +1399,33 @@ print_info "Project Directory: $PROJECT_DIR"
 echo ""
 print_info "Next Steps (if not completed automatically):"
 echo ""
-if [ "$NGROK_SETUP_SUCCESS" != true ]; then
-    echo "1. Set up ngrok tunnel:"
-    echo "   NGROK_AUTHTOKEN=your_token ./setup-ngrok.sh"
-    echo ""
-fi
 if [ "$WEBHOOK_CREATED" != true ]; then
-    echo "2. Create GitHub webhook:"
+    echo "1. Create GitHub webhook:"
     if [ -n "$WEBHOOK_URL" ]; then
         echo "   GITHUB_TOKEN=your_token ./create-github-webhook.sh"
         echo "   Or manually: https://github.com/$GITHUB_USER/$REPO_NAME/settings/hooks"
         echo "   URL: $WEBHOOK_URL"
     else
-        echo "   First get webhook URL: ./get-ngrok-url.sh"
-        echo "   Then: GITHUB_TOKEN=your_token ./create-github-webhook.sh"
+        echo "   Webhook URL: $WEBHOOK_URL"
+        echo "   GITHUB_TOKEN=your_token ./create-github-webhook.sh"
     fi
     echo ""
 fi
 if [ -z "$SSH_KEY_ADDED" ] || [ "$SSH_KEY_ADDED" != true ]; then
-    echo "3. Add SSH public key to GitHub (if not done already):"
+    echo "2. Add SSH public key to GitHub (if not done already):"
     echo "   https://github.com/$GITHUB_USER/$REPO_NAME/settings/keys"
     echo "   Public key: $(cat $SCRIPT_DIR/id_ed25519_repo_pideployment.pub 2>/dev/null || echo 'Run setup-ssh-key.sh first')"
     echo ""
 fi
 if [ "$SERVICE_INSTALLED" = true ]; then
-    echo "5. Check services status:"
+    echo "3. Check services status:"
     echo "   sudo systemctl status iot-gui-webhook.service"
-    echo "   sudo systemctl status iot-gui-ngrok.service"
     echo ""
-    echo "6. View logs:"
+    echo "4. View logs:"
     echo "   sudo journalctl -u iot-gui-webhook.service -f"
-    echo "   sudo journalctl -u iot-gui-ngrok.service -f"
     echo ""
 fi
-echo "7. Application status:"
+echo "5. Application status:"
 if [ "$APP_STARTED" = true ] && [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null; then
     echo "   Application is running (PID: $(cat "$PID_FILE"))"
     echo "   View logs: tail -f $LOG_DIR/app.log"
@@ -1602,16 +1434,16 @@ else
     echo "   Start manually: cd $PROJECT_DIR && source venv/bin/activate && python iot_pubsub_gui.py"
 fi
 echo ""
-echo "7. Test webhook trigger:"
+echo "6. Test webhook trigger:"
 echo "   Make a change to your repo and push to main branch"
 echo "   The webhook should automatically trigger update-and-restart.sh"
 echo "   Check logs: sudo journalctl -u iot-gui-webhook.service -f"
 echo ""
-echo "8. Test manual update:"
+echo "7. Test manual update:"
 echo "   cd $PROJECT_DIR"
 echo "   ./update-and-restart.sh"
 echo ""
-echo "9. Test webhook endpoints:"
+echo "8. Test webhook endpoints:"
 echo "   Local health: curl http://localhost:$WEBHOOK_PORT/health"
 if [ -n "$WEBHOOK_URL" ]; then
     echo "   Public webhook: $WEBHOOK_URL"
@@ -1641,27 +1473,13 @@ else
     ALL_SYSTEMS_GO=false
 fi
 
-# Check ngrok
-if [ "$NGROK_SETUP_SUCCESS" = true ] && [ -n "$WEBHOOK_URL" ]; then
-    # Try multiple ports to find ngrok API
-    NGROK_API_FOUND=false
-    for port in 4040 4041 4042 4043 4044; do
-        if curl -s --max-time 2 http://localhost:$port/api/tunnels >/dev/null 2>&1; then
-            NGROK_API_FOUND=true
-            break
-        fi
-    done
-    
-    if [ "$NGROK_API_FOUND" = true ]; then
-        print_success "✓ ngrok tunnel is active"
-        print_info "   Public URL: $WEBHOOK_URL"
-    else
-        print_warning "✗ ngrok tunnel may not be running"
-        print_info "   Check: sudo systemctl status iot-gui-ngrok.service"
-        ALL_SYSTEMS_GO=false
-    fi
+# Check webhook URL (ngrok is already configured)
+if [ -n "$WEBHOOK_URL" ]; then
+    print_success "✓ Webhook URL configured"
+    print_info "   Public URL: $WEBHOOK_URL"
+    print_info "   ngrok tunnel: $NGROK_URL (already set up)"
 else
-    print_warning "✗ ngrok tunnel not configured"
+    print_warning "✗ Webhook URL not configured"
     ALL_SYSTEMS_GO=false
 fi
 
@@ -1711,26 +1529,21 @@ else
     echo ""
     print_info "Next Steps (if not completed automatically):"
     echo ""
-    if [ "$NGROK_SETUP_SUCCESS" != true ]; then
-        echo "1. Set up ngrok tunnel:"
-        echo "   ./setup-ngrok.sh"
-        echo ""
-    fi
     if [ "$WEBHOOK_CREATED" != true ]; then
-        echo "2. Create GitHub webhook:"
+        echo "1. Create GitHub webhook:"
         if [ -n "$WEBHOOK_URL" ]; then
             echo "   GITHUB_TOKEN=your_token ./create-github-webhook.sh"
             echo "   Or manually: https://github.com/$GITHUB_USER/$REPO_NAME/settings/hooks"
             echo "   URL: $WEBHOOK_URL"
             echo "   Secret: $WEBHOOK_SECRET"
         else
-            echo "   First get webhook URL: ./get-ngrok-url.sh"
-            echo "   Then: GITHUB_TOKEN=your_token ./create-github-webhook.sh"
+            echo "   Webhook URL: $WEBHOOK_URL"
+            echo "   GITHUB_TOKEN=your_token ./create-github-webhook.sh"
         fi
         echo ""
     fi
     if [ -z "$SSH_KEY_ADDED" ] || [ "$SSH_KEY_ADDED" != true ]; then
-        echo "3. Add SSH public key to GitHub (if not done already):"
+        echo "2. Add SSH public key to GitHub (if not done already):"
         echo "   https://github.com/$GITHUB_USER/$REPO_NAME/settings/keys"
         echo "   Public key: $(cat $SCRIPT_DIR/id_ed25519_repo_pideployment.pub 2>/dev/null || echo 'Run setup-ssh-key.sh first')"
         echo ""
