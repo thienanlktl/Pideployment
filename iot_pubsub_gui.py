@@ -77,9 +77,9 @@ class AWSIoTPubSubGUI(QMainWindow):
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(15, 15, 15, 15)
         
-        # Status of update label (red)
+        # Status of update label (green)
         self.update_status_label = QLabel("Status of update")
-        self.update_status_label.setStyleSheet("font-size: 12pt; font-weight: bold; padding: 5px; color: red;")
+        self.update_status_label.setStyleSheet("font-size: 12pt; font-weight: bold; padding: 5px; color: green;")
         main_layout.addWidget(self.update_status_label)
         
         # Status label
