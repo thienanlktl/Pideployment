@@ -50,6 +50,9 @@ set -euo pipefail
 # Get your token from: https://dashboard.ngrok.com/get-started/your-authtoken
 DEFAULT_NGROK_AUTHTOKEN="38HbghqIwfeBRpp4wdZHFkeTOT1_2Dh6671w4NZEUoFMpcVa6"
 
+# Hardcoded ngrok public URL for GitHub webhook setup
+HARDCODED_NGROK_URL="https://tardy-vernita-howlingly.ngrok-free.dev"
+
 # Default tunnel port (can be overridden by environment variable)
 # This is the local port that will be exposed to the internet
 TUNNEL_PORT="${TUNNEL_PORT:-9000}"
@@ -617,7 +620,24 @@ if pgrep -f "ngrok" >/dev/null 2>&1; then
 fi
 
 # If we found an existing working tunnel, use it
-if [ "$NGROK_ALREADY_RUNNING" = true ] && [ -n "$EXISTING_URL" ]; then
+# But prefer hardcoded URL if available
+if [ -n "$HARDCODED_NGROK_URL" ]; then
+    print_info "Using hardcoded ngrok URL: $HARDCODED_NGROK_URL"
+    TUNNEL_URL="$HARDCODED_NGROK_URL"
+    print_success "Using hardcoded ngrok URL for GitHub webhook setup"
+    
+    # Save URL to file if PROJECT_DIR is set
+    if [ -n "${PROJECT_DIR:-}" ]; then
+        # Construct webhook URL
+        if echo "$TUNNEL_URL" | grep -q "/webhook$"; then
+            WEBHOOK_URL="$TUNNEL_URL"
+        else
+            WEBHOOK_URL="$TUNNEL_URL/webhook"
+        fi
+        echo "$WEBHOOK_URL" > "$PROJECT_DIR/.ngrok_url"
+        print_info "Webhook URL saved to: $PROJECT_DIR/.ngrok_url"
+    fi
+elif [ "$NGROK_ALREADY_RUNNING" = true ] && [ -n "$EXISTING_URL" ]; then
     print_success "Using existing ngrok tunnel - no need to start a new one"
     TUNNEL_URL="$EXISTING_URL"
     print_info "Existing tunnel URL: $TUNNEL_URL"
@@ -909,8 +929,32 @@ if [ "$NGROK_ALREADY_RUNNING" = false ]; then
         fi
     fi
     
+    # Use hardcoded URL if available and we couldn't get URL from API/log
+    if [ -z "$TUNNEL_URL" ] && [ -n "$HARDCODED_NGROK_URL" ]; then
+        print_info "Using hardcoded ngrok URL: $HARDCODED_NGROK_URL"
+        TUNNEL_URL="$HARDCODED_NGROK_URL"
+    fi
+    
+    # Use hardcoded URL if available and we couldn't get URL from API/log
+    if [ -z "$TUNNEL_URL" ] && [ -n "$HARDCODED_NGROK_URL" ]; then
+        print_info "Using hardcoded ngrok URL: $HARDCODED_NGROK_URL"
+        TUNNEL_URL="$HARDCODED_NGROK_URL"
+    fi
+    
     if [ -n "$TUNNEL_URL" ]; then
         print_success "Public tunnel URL: $TUNNEL_URL"
+        
+        # Save URL to file if PROJECT_DIR is set
+        if [ -n "${PROJECT_DIR:-}" ]; then
+            # Construct webhook URL
+            if echo "$TUNNEL_URL" | grep -q "/webhook$"; then
+                WEBHOOK_URL="$TUNNEL_URL"
+            else
+                WEBHOOK_URL="$TUNNEL_URL/webhook"
+            fi
+            echo "$WEBHOOK_URL" > "$PROJECT_DIR/.ngrok_url"
+            print_info "Webhook URL saved to: $PROJECT_DIR/.ngrok_url"
+        fi
     else
         print_warning "Could not get tunnel URL automatically"
         print_info "Check ngrok dashboard: http://localhost:$NGROK_WEB_PORT"
@@ -1057,17 +1101,33 @@ echo "  Tunnel name: $TUNNEL_NAME"
 echo "  Local port: $TUNNEL_PORT"
 echo ""
 
+# Use hardcoded URL if available, otherwise use detected URL
+if [ -z "$TUNNEL_URL" ] && [ -n "$HARDCODED_NGROK_URL" ]; then
+    TUNNEL_URL="$HARDCODED_NGROK_URL"
+    print_info "Using hardcoded ngrok URL for GitHub webhook setup"
+fi
+
 if [ -n "$TUNNEL_URL" ]; then
     print_success "Public Tunnel URL:"
     echo "  $TUNNEL_URL"
+    echo ""
+    
+    # Construct webhook URL
+    if echo "$TUNNEL_URL" | grep -q "/webhook$"; then
+        WEBHOOK_URL="$TUNNEL_URL"
+    else
+        WEBHOOK_URL="$TUNNEL_URL/webhook"
+    fi
+    print_success "GitHub Webhook URL:"
+    echo "  $WEBHOOK_URL"
     echo ""
     print_warning "IMPORTANT: Save this URL - external services can now reach your Pi!"
     echo ""
     
     # Save URL to file
     if [ -n "${PROJECT_DIR:-}" ]; then
-        echo "$TUNNEL_URL" > "$PROJECT_DIR/.ngrok_url"
-        print_info "URL saved to: $PROJECT_DIR/.ngrok_url"
+        echo "$WEBHOOK_URL" > "$PROJECT_DIR/.ngrok_url"
+        print_info "Webhook URL saved to: $PROJECT_DIR/.ngrok_url"
     fi
 else
     print_info "To get your tunnel URL:"

@@ -94,6 +94,9 @@ REPO_NAME="${REPO_NAME:-Pideployment}"
 GIT_BRANCH="${GIT_BRANCH:-main}"
 WEBHOOK_PORT="${WEBHOOK_PORT:-9000}"
 
+# Hardcoded ngrok public URL for GitHub webhook setup
+HARDCODED_NGROK_URL="https://tardy-vernita-howlingly.ngrok-free.dev"
+
 # Determine project directory
 # If we're in a git repo, use current directory, otherwise we'll clone
 if is_git_repo; then
@@ -1108,7 +1111,18 @@ else
             fi
         done
         
-        if [ -z "$WEBHOOK_URL" ]; then
+        # Use hardcoded URL if available and we couldn't get URL from API
+        if [ -z "$WEBHOOK_URL" ] && [ -n "$HARDCODED_NGROK_URL" ]; then
+            print_info "Using hardcoded ngrok URL: $HARDCODED_NGROK_URL"
+            if echo "$HARDCODED_NGROK_URL" | grep -q "/webhook$"; then
+                WEBHOOK_URL="$HARDCODED_NGROK_URL"
+            else
+                WEBHOOK_URL="$HARDCODED_NGROK_URL/webhook"
+            fi
+            echo "$WEBHOOK_URL" > "$PROJECT_DIR/.ngrok_url"
+            print_success "Using hardcoded webhook URL: $WEBHOOK_URL"
+            NGROK_SETUP_SUCCESS=true
+        elif [ -z "$WEBHOOK_URL" ]; then
             print_warning "Could not get ngrok URL automatically after $MAX_RETRIES attempts"
             print_info "Checking ngrok service status..."
             sudo systemctl status iot-gui-ngrok.service --no-pager -l | head -10 || true
@@ -1144,6 +1158,18 @@ if [ -n "$WEBHOOK_URL" ] && [ -f "$PROJECT_DIR/create-github-webhook.sh" ]; then
             WEBHOOK_URL="${WEBHOOK_URL}/webhook"
         fi
         print_info "Updated webhook URL to: $WEBHOOK_URL"
+    fi
+    
+    # If webhook URL is still empty, try hardcoded URL
+    if [ -z "$WEBHOOK_URL" ] && [ -n "$HARDCODED_NGROK_URL" ]; then
+        print_info "Using hardcoded ngrok URL: $HARDCODED_NGROK_URL"
+        if echo "$HARDCODED_NGROK_URL" | grep -q "/webhook$"; then
+            WEBHOOK_URL="$HARDCODED_NGROK_URL"
+        else
+            WEBHOOK_URL="$HARDCODED_NGROK_URL/webhook"
+        fi
+        echo "$WEBHOOK_URL" > "$PROJECT_DIR/.ngrok_url"
+        print_success "Using hardcoded webhook URL: $WEBHOOK_URL"
     fi
     
     # Check for GitHub token: environment variable, .github_token file, or default

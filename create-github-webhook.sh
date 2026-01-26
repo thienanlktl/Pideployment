@@ -67,6 +67,9 @@ REPO_NAME="${REPO_NAME:-Pideployment}"
 WEBHOOK_SECRET_FILE="$PROJECT_DIR/.webhook_secret"
 NGROK_URL_FILE="$PROJECT_DIR/.ngrok_url"
 
+# Hardcoded ngrok public URL for GitHub webhook setup
+HARDCODED_NGROK_URL="https://tardy-vernita-howlingly.ngrok-free.dev"
+
 echo ""
 print_step "Automatically Create GitHub Webhook"
 
@@ -133,16 +136,40 @@ fi
 # If not found in file, try to get from ngrok API
 if [ -z "$WEBHOOK_URL" ] && command -v curl >/dev/null 2>&1; then
     print_info "Getting ngrok URL from API..."
-    # Get ngrok URL from API (using sed for better compatibility)
-    # Use port 4041 for ngrok web interface (changed from 4040 to avoid blocking)
-    NGROK_WEB_PORT="${NGROK_WEB_PORT:-4041}"
-    NGROK_BASE_URL=$(curl -s --max-time 3 http://localhost:$NGROK_WEB_PORT/api/tunnels 2>/dev/null | \
-        grep -o '"public_url":"https://[^"]*' | head -1 | sed 's/"public_url":"//')
+    # Try multiple ports to find ngrok API
+    NGROK_BASE_URL=""
+    for port in 4040 4041 4042 4043 4044; do
+        if curl -s --max-time 2 "http://localhost:$port/api/tunnels" >/dev/null 2>&1; then
+            NGROK_BASE_URL=$(curl -s --max-time 3 "http://localhost:$port/api/tunnels" 2>/dev/null | \
+                grep -o '"public_url":"https://[^"]*' | head -1 | sed 's/"public_url":"//')
+            if [ -n "$NGROK_BASE_URL" ]; then
+                break
+            fi
+        fi
+    done
+    
     if [ -n "$NGROK_BASE_URL" ]; then
-        WEBHOOK_URL="$NGROK_BASE_URL/webhook"
+        # Ensure webhook URL has /webhook suffix
+        if echo "$NGROK_BASE_URL" | grep -q "/webhook$"; then
+            WEBHOOK_URL="$NGROK_BASE_URL"
+        else
+            WEBHOOK_URL="$NGROK_BASE_URL/webhook"
+        fi
         print_success "Got webhook URL: $WEBHOOK_URL"
         echo "$WEBHOOK_URL" > "$NGROK_URL_FILE"
     fi
+fi
+
+# If still not found, use hardcoded URL
+if [ -z "$WEBHOOK_URL" ] && [ -n "$HARDCODED_NGROK_URL" ]; then
+    print_info "Using hardcoded ngrok URL: $HARDCODED_NGROK_URL"
+    if echo "$HARDCODED_NGROK_URL" | grep -q "/webhook$"; then
+        WEBHOOK_URL="$HARDCODED_NGROK_URL"
+    else
+        WEBHOOK_URL="$HARDCODED_NGROK_URL/webhook"
+    fi
+    print_success "Using hardcoded webhook URL: $WEBHOOK_URL"
+    echo "$WEBHOOK_URL" > "$NGROK_URL_FILE"
 fi
 
 # If still not found and not in non-interactive mode, prompt
