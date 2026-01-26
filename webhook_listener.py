@@ -283,19 +283,65 @@ def health():
     }), 200
 
 
+@app.route('/trigger', methods=['GET', 'POST'])
+def trigger():
+    """
+    Manual trigger endpoint to run update-and-restart.sh
+    Can be called via GET or POST request
+    """
+    logger.info("Manual trigger endpoint called - running update script")
+    
+    # Run update script
+    success, output, error = run_update_script()
+    
+    if success:
+        logger.info("Update and restart completed successfully (manual trigger)")
+        return jsonify({
+            'status': 'success',
+            'message': 'Update and restart triggered successfully',
+            'output': output[-1000:] if output else ''  # Last 1000 chars of output
+        }), 200
+    else:
+        logger.error(f"Update and restart failed (manual trigger): {error}")
+        return jsonify({
+            'status': 'error',
+            'message': 'Update and restart failed',
+            'error': error[-1000:] if error else 'Unknown error'  # Last 1000 chars of error
+        }), 500
+
+
 @app.route('/', methods=['GET'])
 def index():
     """
-    Root endpoint with basic info
+    Root endpoint - triggers update-and-restart.sh when accessed
     """
-    return jsonify({
-        'service': 'GitHub Webhook Listener for AWS IoT Pub/Sub GUI',
-        'endpoints': {
-            'webhook': '/webhook (POST)',
-            'health': '/health (GET)'
-        },
-        'target_branch': TARGET_BRANCH
-    }), 200
+    logger.info("Root endpoint accessed - triggering update script")
+    
+    # Run update script
+    success, output, error = run_update_script()
+    
+    if success:
+        logger.info("Update and restart completed successfully (root endpoint trigger)")
+        return jsonify({
+            'status': 'success',
+            'message': 'Update and restart triggered successfully',
+            'service': 'GitHub Webhook Listener for AWS IoT Pub/Sub GUI',
+            'endpoints': {
+                'webhook': '/webhook (POST)',
+                'health': '/health (GET)',
+                'trigger': '/trigger (GET/POST) - Manually trigger update-and-restart.sh'
+            },
+            'target_branch': TARGET_BRANCH,
+            'output': output[-500:] if output else ''  # Last 500 chars of output
+        }), 200
+    else:
+        logger.error(f"Update and restart failed (root endpoint trigger): {error}")
+        return jsonify({
+            'status': 'error',
+            'message': 'Update and restart failed',
+            'service': 'GitHub Webhook Listener for AWS IoT Pub/Sub GUI',
+            'error': error[-500:] if error else 'Unknown error'  # Last 500 chars of error
+        }), 500
 
 
 # ============================================================================
