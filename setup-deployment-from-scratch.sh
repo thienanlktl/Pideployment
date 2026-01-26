@@ -339,7 +339,7 @@ if [ "$USE_EXISTING_KEY" = true ]; then
                 chmod 600 "$SSH_CONFIG"
             fi
             echo "" >> "$SSH_CONFIG"
-            echo "# GitHub Deploy Key for IoT Pub/Sub GUI" >> "$SSH_CONFIG"
+            echo "# GitHub Deploy Key for Pideployment Repository" >> "$SSH_CONFIG"
             echo "$CONFIG_ENTRY" >> "$SSH_CONFIG"
             print_success "SSH config updated"
         fi
@@ -674,11 +674,24 @@ if [ ${#MISSING_FILES[@]} -gt 0 ]; then
     print_warning "Some required files are missing: ${MISSING_FILES[*]}"
     print_info "Pulling latest code from repository..."
     
-    # Try to pull latest code
-    git pull origin "$GIT_BRANCH" 2>/dev/null || {
-        print_warning "Could not pull latest code"
-        print_info "Make sure the repository is up to date"
-    }
+    # Try to pull latest code (use SSH key if available)
+    CURRENT_REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
+    # Ensure KEY_PATH is set (may not be set yet if we're before Step 6)
+    if [ -z "$KEY_PATH" ]; then
+        KEY_PATH="$SCRIPT_DIR/id_ed25519_repo_pideployment"
+    fi
+    if echo "$CURRENT_REMOTE_URL" | grep -q "^git@" && [ -f "$KEY_PATH" ]; then
+        print_info "Using SSH key for git pull..."
+        GIT_SSH_COMMAND="ssh -i $KEY_PATH -o IdentitiesOnly=yes -o StrictHostKeyChecking=no" git pull origin "$GIT_BRANCH" 2>/dev/null || {
+            print_warning "Could not pull latest code"
+            print_info "Make sure the repository is up to date"
+        }
+    else
+        git pull origin "$GIT_BRANCH" 2>/dev/null || {
+            print_warning "Could not pull latest code"
+            print_info "Make sure the repository is up to date"
+        }
+    fi
     
     # Check again
     STILL_MISSING=()
@@ -850,7 +863,22 @@ fi
 
 # Pull latest code
 print_info "Pulling latest code from repository..."
-if git pull origin "$GIT_BRANCH" 2>/dev/null; then
+# Use SSH key if available and remote is SSH
+CURRENT_REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
+# Ensure KEY_PATH is set
+if [ -z "$KEY_PATH" ]; then
+    KEY_PATH="$SCRIPT_DIR/id_ed25519_repo_pideployment"
+fi
+if echo "$CURRENT_REMOTE_URL" | grep -q "^git@" && [ -f "$KEY_PATH" ]; then
+    print_info "Using SSH key for git pull..."
+    GIT_SSH_COMMAND="ssh -i $KEY_PATH -o IdentitiesOnly=yes -o StrictHostKeyChecking=no" git pull origin "$GIT_BRANCH" 2>/dev/null
+    PULL_EXIT_CODE=$?
+else
+    git pull origin "$GIT_BRANCH" 2>/dev/null
+    PULL_EXIT_CODE=$?
+fi
+
+if [ $PULL_EXIT_CODE -eq 0 ]; then
     print_success "Repository is up to date"
 else
     print_warning "Could not pull latest code (this is OK if repository is already up to date)"
@@ -1286,23 +1314,57 @@ if [ -n "$WEBHOOK_URL" ] && [ -f "$PROJECT_DIR/create-github-webhook.sh" ]; then
         export NON_INTERACTIVE=1
         
         print_info "Creating GitHub webhook with URL: $WEBHOOK_URL"
-        WEBHOOK_RESULT=$(cd "$PROJECT_DIR" && GITHUB_TOKEN="$GITHUB_TOKEN" GITHUB_USER="$GITHUB_USER" REPO_NAME="$REPO_NAME" PROJECT_DIR="$PROJECT_DIR" NON_INTERACTIVE=1 "$PROJECT_DIR/create-github-webhook.sh" 2>&1)
         
-        if echo "$WEBHOOK_RESULT" | grep -qi "successfully\|created\|updated"; then
+        # Change to project directory first
+        cd "$PROJECT_DIR" || {
+            print_error "Cannot change to project directory: $PROJECT_DIR"
+            WEBHOOK_CREATED=false
+        }
+        
+        # Run webhook creation script and capture output
+        # Use a temporary file to capture both output and exit code
+        TEMP_WEBHOOK_OUTPUT=$(mktemp 2>/dev/null || echo "/tmp/webhook-output-$$")
+        if GITHUB_TOKEN="$GITHUB_TOKEN" GITHUB_USER="$GITHUB_USER" REPO_NAME="$REPO_NAME" PROJECT_DIR="$PROJECT_DIR" NON_INTERACTIVE=1 "$PROJECT_DIR/create-github-webhook.sh" > "$TEMP_WEBHOOK_OUTPUT" 2>&1; then
+            WEBHOOK_EXIT_CODE=0
+        else
+            WEBHOOK_EXIT_CODE=$?
+        fi
+        
+        WEBHOOK_RESULT=$(cat "$TEMP_WEBHOOK_OUTPUT" 2>/dev/null || echo "")
+        rm -f "$TEMP_WEBHOOK_OUTPUT"
+        
+        # Check if webhook was created successfully
+        if [ $WEBHOOK_EXIT_CODE -eq 0 ] || echo "$WEBHOOK_RESULT" | grep -qi "successfully\|created\|updated\|accepted"; then
             WEBHOOK_CREATED=true
             print_success "GitHub webhook created/updated successfully!"
         else
             print_warning "Webhook creation result unclear"
-            echo "$WEBHOOK_RESULT" | tail -10
-            print_info "Checking if webhook exists..."
-            # Try to verify webhook exists
-            EXISTING_WEBHOOKS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            print_info "Webhook script output:"
+            echo "$WEBHOOK_RESULT" | tail -15
+            print_info "Checking if webhook exists via API..."
+            
+            # Try to verify webhook exists using GitHub API
+            EXISTING_WEBHOOKS_RESPONSE=$(curl -s -w "\n%{http_code}" \
+                -H "Authorization: token $GITHUB_TOKEN" \
+                -H "Accept: application/vnd.github.v3+json" \
                 "https://api.github.com/repos/$GITHUB_USER/$REPO_NAME/hooks" 2>/dev/null)
-            if echo "$EXISTING_WEBHOOKS" | grep -q "$WEBHOOK_URL"; then
-                WEBHOOK_CREATED=true
-                print_success "Webhook already exists and points to correct URL!"
+            
+            EXISTING_WEBHOOKS_HTTP_CODE=$(echo "$EXISTING_WEBHOOKS_RESPONSE" | tail -1)
+            EXISTING_WEBHOOKS=$(echo "$EXISTING_WEBHOOKS_RESPONSE" | sed '$d')
+            
+            if [ "$EXISTING_WEBHOOKS_HTTP_CODE" = "200" ]; then
+                # Escape URL for grep (handle special characters)
+                ESCAPED_WEBHOOK_URL=$(echo "$WEBHOOK_URL" | sed 's/[[\.*^$()+?{|]/\\&/g')
+                if echo "$EXISTING_WEBHOOKS" | grep -q "$ESCAPED_WEBHOOK_URL"; then
+                    WEBHOOK_CREATED=true
+                    print_success "Webhook already exists and points to correct URL!"
+                else
+                    print_warning "Webhook may not have been created"
+                    print_info "You can create it manually: ./create-github-webhook.sh"
+                    print_info "Or check the output above for specific error messages"
+                fi
             else
-                print_warning "Webhook may not have been created"
+                print_warning "Could not verify webhook via API (HTTP $EXISTING_WEBHOOKS_HTTP_CODE)"
                 print_info "You can create it manually: ./create-github-webhook.sh"
             fi
         fi

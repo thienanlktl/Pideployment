@@ -212,36 +212,106 @@ else
 fi
 
 # ============================================================================
-# Step 4: Check if webhook already exists
+# Step 4: Verify GitHub Token and Repository Access
 # ============================================================================
-print_step "Step 4: Checking Existing Webhooks"
+print_step "Step 4: Verifying GitHub Access"
+
+print_info "Verifying GitHub token and repository access..."
+AUTH_CHECK=$(curl -s -w "\n%{http_code}" -H "Authorization: token $GITHUB_TOKEN" \
+    -H "Accept: application/vnd.github.v3+json" \
+    "https://api.github.com/repos/$GITHUB_USER/$REPO_NAME" 2>/dev/null)
+
+AUTH_HTTP_CODE=$(echo "$AUTH_CHECK" | tail -1)
+AUTH_RESPONSE_BODY=$(echo "$AUTH_CHECK" | sed '$d')
+
+if [ "$AUTH_HTTP_CODE" != "200" ]; then
+    print_error "Failed to access repository"
+    print_error "HTTP Status: $AUTH_HTTP_CODE"
+    if echo "$AUTH_RESPONSE_BODY" | grep -q "Bad credentials"; then
+        print_error "Invalid GitHub token or token expired"
+        print_info "Create a new token at: https://github.com/settings/tokens"
+    elif echo "$AUTH_RESPONSE_BODY" | grep -q "Not Found"; then
+        print_error "Repository not found: $GITHUB_USER/$REPO_NAME"
+        print_info "Verify repository name and that token has access"
+    else
+        print_error "Response: $(echo "$AUTH_RESPONSE_BODY" | head -5)"
+    fi
+    exit 1
+fi
+
+print_success "GitHub token is valid and has repository access"
+
+# ============================================================================
+# Step 5: Check if webhook already exists
+# ============================================================================
+print_step "Step 5: Checking Existing Webhooks"
 
 print_info "Checking for existing webhooks..."
-EXISTING_WEBHOOKS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+EXISTING_WEBHOOKS_RESPONSE=$(curl -s -w "\n%{http_code}" \
+    -H "Authorization: token $GITHUB_TOKEN" \
+    -H "Accept: application/vnd.github.v3+json" \
     "https://api.github.com/repos/$GITHUB_USER/$REPO_NAME/hooks" 2>/dev/null)
 
-if echo "$EXISTING_WEBHOOKS" | grep -q "\"url\""; then
+EXISTING_WEBHOOKS_HTTP_CODE=$(echo "$EXISTING_WEBHOOKS_RESPONSE" | tail -1)
+EXISTING_WEBHOOKS=$(echo "$EXISTING_WEBHOOKS_RESPONSE" | sed '$d')
+
+if [ "$EXISTING_WEBHOOKS_HTTP_CODE" != "200" ]; then
+    print_warning "Could not check existing webhooks (HTTP $EXISTING_WEBHOOKS_HTTP_CODE)"
+    print_info "Will attempt to create new webhook"
+    UPDATE_EXISTING=false
+    WEBHOOK_ID=""
+elif echo "$EXISTING_WEBHOOKS" | grep -q "\"id\""; then
     print_info "Found existing webhooks"
     
     # Check if our webhook URL already exists
-    if echo "$EXISTING_WEBHOOKS" | grep -q "$WEBHOOK_URL"; then
+    # Escape the URL for grep
+    ESCAPED_WEBHOOK_URL=$(echo "$WEBHOOK_URL" | sed 's/[[\.*^$()+?{|]/\\&/g')
+    if echo "$EXISTING_WEBHOOKS" | grep -q "$ESCAPED_WEBHOOK_URL"; then
         print_warning "Webhook with this URL already exists"
-        read -p "Update existing webhook? (y/n) " -n 1 -r
-        echo ""
-        case "$REPLY" in
-            [Yy]*)
-                UPDATE_EXISTING=true
-                # Get webhook ID
-                # Extract webhook ID (using sed for better compatibility)
-                WEBHOOK_ID=$(echo "$EXISTING_WEBHOOKS" | grep -B 5 "$WEBHOOK_URL" | \
-                    grep '"id"' | head -1 | sed 's/.*"id": *\([0-9]*\).*/\1/')
-                ;;
-            *)
-                print_info "Keeping existing webhook"
-                print_success "Webhook is already configured!"
-                exit 0
-                ;;
-        esac
+        
+        # Extract webhook ID more reliably using JSON parsing
+        # Try using Python if available for better JSON parsing
+        if command -v python3 >/dev/null 2>&1; then
+            WEBHOOK_ID=$(echo "$EXISTING_WEBHOOKS" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for hook in data:
+        if hook.get('config', {}).get('url') == sys.argv[1]:
+            print(hook['id'])
+            sys.exit(0)
+except:
+    pass
+" "$WEBHOOK_URL" 2>/dev/null)
+        fi
+        
+        # Fallback to grep/sed if Python not available
+        if [ -z "$WEBHOOK_ID" ]; then
+            WEBHOOK_ID=$(echo "$EXISTING_WEBHOOKS" | grep -A 10 "$ESCAPED_WEBHOOK_URL" | \
+                grep '"id"' | head -1 | sed 's/.*"id": *\([0-9]*\).*/\1/')
+        fi
+        
+        if [ -n "$WEBHOOK_ID" ] && [ "$NON_INTERACTIVE" != "1" ]; then
+            read -p "Update existing webhook (ID: $WEBHOOK_ID)? (y/n) " -n 1 -r
+            echo ""
+            case "$REPLY" in
+                [Yy]*)
+                    UPDATE_EXISTING=true
+                    ;;
+                *)
+                    print_info "Keeping existing webhook"
+                    print_success "Webhook is already configured!"
+                    exit 0
+                    ;;
+            esac
+        elif [ -n "$WEBHOOK_ID" ]; then
+            # Non-interactive mode - auto-update
+            UPDATE_EXISTING=true
+            print_info "Auto-updating existing webhook (ID: $WEBHOOK_ID) in non-interactive mode"
+        else
+            print_warning "Could not extract webhook ID, will create new webhook"
+            UPDATE_EXISTING=false
+        fi
     else
         UPDATE_EXISTING=false
         print_info "Will create new webhook"
@@ -252,43 +322,61 @@ else
 fi
 
 # ============================================================================
-# Step 5: Create or Update Webhook
+# Step 6: Create or Update Webhook
 # ============================================================================
-print_step "Step 5: Creating/Updating Webhook"
+print_step "Step 6: Creating/Updating Webhook"
 
-# Prepare webhook payload
+# Validate webhook URL format
+if ! echo "$WEBHOOK_URL" | grep -qE "^https?://"; then
+    print_error "Invalid webhook URL format: $WEBHOOK_URL"
+    print_info "URL must start with http:// or https://"
+    exit 1
+fi
+
+# Prepare webhook payload (escape quotes in URL and secret)
+ESCAPED_WEBHOOK_URL=$(echo "$WEBHOOK_URL" | sed 's/"/\\"/g')
+ESCAPED_WEBHOOK_SECRET=$(echo "$WEBHOOK_SECRET" | sed 's/"/\\"/g')
+
 WEBHOOK_PAYLOAD=$(cat <<EOF
 {
   "name": "web",
   "active": true,
   "events": ["push"],
   "config": {
-    "url": "$WEBHOOK_URL",
+    "url": "$ESCAPED_WEBHOOK_URL",
     "content_type": "application/json",
-    "secret": "$WEBHOOK_SECRET",
+    "secret": "$ESCAPED_WEBHOOK_SECRET",
     "insecure_ssl": "0"
   }
 }
 EOF
 )
 
+# Debug: Show what we're sending (without secret)
+print_info "Webhook configuration:"
+echo "  URL: $WEBHOOK_URL"
+echo "  Events: push"
+echo "  Repository: $GITHUB_USER/$REPO_NAME"
+echo ""
+
 if [ "$UPDATE_EXISTING" = true ] && [ -n "$WEBHOOK_ID" ]; then
     print_info "Updating existing webhook (ID: $WEBHOOK_ID)..."
-    RESPONSE=$(curl -s -w "\n%{http_code}" -X PATCH \
-        -H "Authorization: token $GITHUB_TOKEN" \
-        -H "Accept: application/vnd.github.v3+json" \
-        -H "Content-Type: application/json" \
-        -d "$WEBHOOK_PAYLOAD" \
-        "https://api.github.com/repos/$GITHUB_USER/$REPO_NAME/hooks/$WEBHOOK_ID" 2>/dev/null)
+    API_URL="https://api.github.com/repos/$GITHUB_USER/$REPO_NAME/hooks/$WEBHOOK_ID"
+    HTTP_METHOD="PATCH"
 else
     print_info "Creating new webhook..."
-    RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-        -H "Authorization: token $GITHUB_TOKEN" \
-        -H "Accept: application/vnd.github.v3+json" \
-        -H "Content-Type: application/json" \
-        -d "$WEBHOOK_PAYLOAD" \
-        "https://api.github.com/repos/$GITHUB_USER/$REPO_NAME/hooks" 2>/dev/null)
+    API_URL="https://api.github.com/repos/$GITHUB_USER/$REPO_NAME/hooks"
+    HTTP_METHOD="POST"
 fi
+
+# Make API request with better error handling
+print_info "Sending request to GitHub API..."
+RESPONSE=$(curl -s -w "\n%{http_code}" -X "$HTTP_METHOD" \
+    -H "Authorization: token $GITHUB_TOKEN" \
+    -H "Accept: application/vnd.github.v3+json" \
+    -H "Content-Type: application/json" \
+    -d "$WEBHOOK_PAYLOAD" \
+    "$API_URL" 2>&1)
 
 # Extract HTTP status code (last line)
 HTTP_CODE=$(echo "$RESPONSE" | tail -1)
@@ -302,22 +390,46 @@ if [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ]; then
     echo "  URL: $WEBHOOK_URL"
     echo "  Events: push"
     echo "  Repository: $GITHUB_USER/$REPO_NAME"
+    if [ -n "$WEBHOOK_ID" ]; then
+        echo "  Webhook ID: $WEBHOOK_ID"
+    fi
     echo ""
     print_info "View webhook in GitHub:"
     echo "  https://github.com/$GITHUB_USER/$REPO_NAME/settings/hooks"
     echo ""
     print_success "Setup complete! Webhook will trigger on push to main branch."
+    exit 0
 else
     print_error "Failed to create/update webhook"
     print_error "HTTP Status: $HTTP_CODE"
     echo ""
-    print_error "Response:"
-    echo "$RESPONSE_BODY" | head -20
+    print_error "API Response:"
+    echo "$RESPONSE_BODY" | head -30
     echo ""
-    print_info "Troubleshooting:"
-    echo "  1. Verify GitHub token has correct permissions"
-    echo "  2. Check webhook URL is accessible"
-    echo "  3. Verify repository name: $GITHUB_USER/$REPO_NAME"
+    
+    # Provide specific error messages
+    if echo "$RESPONSE_BODY" | grep -qi "Bad credentials\|Unauthorized"; then
+        print_error "Authentication failed - token is invalid or expired"
+        print_info "Create a new token at: https://github.com/settings/tokens"
+        print_info "Required scope: repo (for private) or public_repo (for public)"
+    elif echo "$RESPONSE_BODY" | grep -qi "Not Found"; then
+        print_error "Repository not found or no access"
+        print_info "Verify: $GITHUB_USER/$REPO_NAME"
+        print_info "Ensure token has access to this repository"
+    elif echo "$RESPONSE_BODY" | grep -qi "Validation Failed\|Invalid"; then
+        print_error "Validation error - check webhook URL format"
+        print_info "URL must be accessible and start with http:// or https://"
+        print_info "Current URL: $WEBHOOK_URL"
+    elif echo "$RESPONSE_BODY" | grep -qi "Forbidden"; then
+        print_error "Access forbidden - token may not have admin permissions"
+        print_info "Token needs 'admin:repo_hook' scope for webhook management"
+    else
+        print_info "Troubleshooting:"
+        echo "  1. Verify GitHub token has correct permissions (repo or admin:repo_hook)"
+        echo "  2. Check webhook URL is accessible: curl -I $WEBHOOK_URL"
+        echo "  3. Verify repository name: $GITHUB_USER/$REPO_NAME"
+        echo "  4. Check token hasn't expired"
+    fi
     exit 1
 fi
 

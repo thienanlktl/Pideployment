@@ -16,6 +16,7 @@ import hashlib
 import subprocess
 import json
 import logging
+import threading
 from pathlib import Path
 from datetime import datetime
 
@@ -326,39 +327,47 @@ def webhook():
     except Exception as e:
         logger.warning(f"Could not extract commit info: {e}")
     
-    # Run update script
-    logger.info("Triggering update and restart...")
-    add_log_entry('info', 'Webhook triggered update and restart', {
+    # Run update script in background thread to keep webhook listener responsive
+    logger.info("Triggering update and restart in background...")
+    add_log_entry('info', 'Webhook triggered update and restart (running in background)', {
         'event_type': event_type,
         'branch': TARGET_BRANCH,
         'commit_count': commit_count,
         'commit_messages': commit_messages
     })
     
-    success, output, error = run_update_script()
+    def run_update_in_background():
+        """Run update script in background thread"""
+        try:
+            success, output, error = run_update_script()
+            
+            if success:
+                logger.info("Update and restart completed successfully (background)")
+                add_log_entry('success', 'Update and restart completed successfully via webhook (background)', {
+                    'commits': commit_count
+                })
+            else:
+                logger.error(f"Update and restart failed (background): {error}")
+                add_log_entry('error', 'Update and restart failed via webhook (background)', {
+                    'error': error[:500]
+                })
+        except Exception as e:
+            logger.error(f"Error in background update thread: {e}")
+            add_log_entry('error', f'Background update thread error: {str(e)}')
     
-    if success:
-        logger.info("Update and restart completed successfully")
-        add_log_entry('success', 'Update and restart completed successfully via webhook', {
-            'commits': commit_count
-        })
-        return jsonify({
-            'status': 'success',
-            'message': 'Update and restart triggered successfully',
-            'commits': commit_count,
-            'timestamp': datetime.now().isoformat()
-        }), 200
-    else:
-        logger.error(f"Update and restart failed: {error}")
-        add_log_entry('error', 'Update and restart failed via webhook', {
-            'error': error[:500]
-        })
-        return jsonify({
-            'status': 'error',
-            'message': 'Update and restart failed',
-            'error': error[:500],  # Limit error message length
-            'timestamp': datetime.now().isoformat()
-        }), 500
+    # Start update in background thread
+    update_thread = threading.Thread(target=run_update_in_background, daemon=True)
+    update_thread.start()
+    
+    # Return immediately so webhook listener can continue handling requests
+    logger.info("Update process started in background, webhook listener continues running")
+    return jsonify({
+        'status': 'accepted',
+        'message': 'Update and restart triggered successfully (running in background)',
+        'commits': commit_count,
+        'timestamp': datetime.now().isoformat(),
+        'note': 'The update is running in the background. Check logs for completion status.'
+    }), 202  # 202 Accepted - request accepted for processing
 
 
 @app.route('/health', methods=['GET'])
@@ -449,38 +458,45 @@ def trigger():
     """
     Manual trigger endpoint to run update-and-restart.sh
     Can be called via GET or POST request
+    Runs update in background to keep listener responsive
     """
-    logger.info("Manual trigger endpoint called - running update script")
-    add_log_entry('info', 'Manual trigger endpoint called', {
+    logger.info("Manual trigger endpoint called - running update script in background")
+    add_log_entry('info', 'Manual trigger endpoint called (running in background)', {
         'method': request.method,
         'remote_addr': request.remote_addr
     })
     
-    # Run update script - ensure it's called
-    success, output, error = run_update_script()
+    def run_update_in_background():
+        """Run update script in background thread"""
+        try:
+            success, output, error = run_update_script()
+            
+            if success:
+                logger.info("Update and restart completed successfully (manual trigger, background)")
+                add_log_entry('success', 'Update and restart completed successfully (manual trigger, background)', {
+                    'output_length': len(output) if output else 0
+                })
+            else:
+                logger.error(f"Update and restart failed (manual trigger, background): {error}")
+                add_log_entry('error', 'Update and restart failed (manual trigger, background)', {
+                    'error': error[-1000:] if error else 'Unknown error'
+                })
+        except Exception as e:
+            logger.error(f"Error in background update thread (manual trigger): {e}")
+            add_log_entry('error', f'Background update thread error (manual trigger): {str(e)}')
     
-    if success:
-        logger.info("Update and restart completed successfully (manual trigger)")
-        add_log_entry('success', 'Update and restart completed successfully (manual trigger)', {
-            'output_length': len(output) if output else 0
-        })
-        return jsonify({
-            'status': 'success',
-            'message': 'Update and restart triggered successfully',
-            'output': output[-1000:] if output else '',  # Last 1000 chars of output
-            'timestamp': datetime.now().isoformat()
-        }), 200
-    else:
-        logger.error(f"Update and restart failed (manual trigger): {error}")
-        add_log_entry('error', 'Update and restart failed (manual trigger)', {
-            'error': error[-1000:] if error else 'Unknown error'
-        })
-        return jsonify({
-            'status': 'error',
-            'message': 'Update and restart failed',
-            'error': error[-1000:] if error else 'Unknown error',  # Last 1000 chars of error
-            'timestamp': datetime.now().isoformat()
-        }), 500
+    # Start update in background thread
+    update_thread = threading.Thread(target=run_update_in_background, daemon=True)
+    update_thread.start()
+    
+    # Return immediately so webhook listener can continue handling requests
+    logger.info("Update process started in background (manual trigger), webhook listener continues running")
+    return jsonify({
+        'status': 'accepted',
+        'message': 'Update and restart triggered successfully (running in background)',
+        'timestamp': datetime.now().isoformat(),
+        'note': 'The update is running in the background. Check logs for completion status.'
+    }), 202  # 202 Accepted - request accepted for processing
 
 
 @app.route('/', methods=['GET'])
@@ -502,47 +518,53 @@ def index():
         'ui_application': 'iot_pubsub_gui.py'
     })
     
-    # Run update script - this will pull latest code and restart the UI
-    logger.info("Executing update-and-restart.sh to update UI application...")
-    success, output, error = run_update_script()
+    # Run update script in background thread to keep webhook listener responsive
+    logger.info("Executing update-and-restart.sh to update UI application (running in background)...")
     
-    if success:
-        logger.info("UI update and restart completed successfully (root endpoint trigger)")
-        logger.info("iot_pubsub_gui.py has been updated and restarted with latest code")
-        add_log_entry('success', 'UI update and restart completed successfully (root endpoint trigger)', {
-            'ui_application': 'iot_pubsub_gui.py',
-            'action': 'update_and_restart_ui'
-        })
-        return jsonify({
-            'status': 'success',
-            'message': 'UI application (iot_pubsub_gui.py) update and restart triggered successfully',
-            'ui_application': 'iot_pubsub_gui.py',
-            'action': 'update_and_restart',
-            'service': 'GitHub Webhook Listener for AWS IoT Pub/Sub GUI',
-            'endpoints': {
-                'webhook': '/webhook (POST)',
-                'health': '/health (GET)',
-                'trigger': '/trigger (GET/POST) - Manually trigger update-and-restart.sh',
-                'logs': '/logs (GET) - View update and restart logs'
-            },
-            'target_branch': TARGET_BRANCH,
-            'output': output[-500:] if output else '',  # Last 500 chars of output
-            'timestamp': datetime.now().isoformat()
-        }), 200
-    else:
-        logger.error(f"UI update and restart failed (root endpoint trigger): {error}")
-        add_log_entry('error', 'UI update and restart failed (root endpoint trigger)', {
-            'ui_application': 'iot_pubsub_gui.py',
-            'error': error[-500:] if error else 'Unknown error'
-        })
-        return jsonify({
-            'status': 'error',
-            'message': 'UI application (iot_pubsub_gui.py) update and restart failed',
-            'ui_application': 'iot_pubsub_gui.py',
-            'service': 'GitHub Webhook Listener for AWS IoT Pub/Sub GUI',
-            'error': error[-500:] if error else 'Unknown error',  # Last 500 chars of error
-            'timestamp': datetime.now().isoformat()
-        }), 500
+    def run_update_in_background():
+        """Run update script in background thread"""
+        try:
+            success, output, error = run_update_script()
+            
+            if success:
+                logger.info("UI update and restart completed successfully (root endpoint trigger, background)")
+                logger.info("iot_pubsub_gui.py has been updated and restarted with latest code")
+                add_log_entry('success', 'UI update and restart completed successfully (root endpoint trigger, background)', {
+                    'ui_application': 'iot_pubsub_gui.py',
+                    'action': 'update_and_restart_ui'
+                })
+            else:
+                logger.error(f"UI update and restart failed (root endpoint trigger, background): {error}")
+                add_log_entry('error', 'UI update and restart failed (root endpoint trigger, background)', {
+                    'ui_application': 'iot_pubsub_gui.py',
+                    'error': error[-500:] if error else 'Unknown error'
+                })
+        except Exception as e:
+            logger.error(f"Error in background update thread (root endpoint): {e}")
+            add_log_entry('error', f'Background update thread error (root endpoint): {str(e)}')
+    
+    # Start update in background thread
+    update_thread = threading.Thread(target=run_update_in_background, daemon=True)
+    update_thread.start()
+    
+    # Return immediately so webhook listener can continue handling requests
+    logger.info("Update process started in background (root endpoint), webhook listener continues running")
+    return jsonify({
+        'status': 'accepted',
+        'message': 'UI application (iot_pubsub_gui.py) update and restart triggered successfully (running in background)',
+        'ui_application': 'iot_pubsub_gui.py',
+        'action': 'update_and_restart',
+        'service': 'GitHub Webhook Listener for AWS IoT Pub/Sub GUI',
+        'endpoints': {
+            'webhook': '/webhook (POST)',
+            'health': '/health (GET)',
+            'trigger': '/trigger (GET/POST) - Manually trigger update-and-restart.sh',
+            'logs': '/logs (GET) - View update and restart logs'
+        },
+        'target_branch': TARGET_BRANCH,
+        'timestamp': datetime.now().isoformat(),
+        'note': 'The update is running in the background. Check logs for completion status.'
+    }), 202  # 202 Accepted - request accepted for processing
 
 
 # ============================================================================
