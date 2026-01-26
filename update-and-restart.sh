@@ -588,7 +588,19 @@ mkdir -p "$LOG_DIR"
 log_with_timestamp "START: Launching application with: $VENV_PYTHON $APP_FILE"
 log_with_timestamp "START: Output will be logged to: $LOG_DIR/app.log"
 log_with_timestamp "START: DISPLAY=$DISPLAY"
-nohup "$VENV_PYTHON" "$APP_FILE" >> "$LOG_DIR/app.log" 2>&1 &
+log_with_timestamp "START: VIRTUAL_ENV=$VIRTUAL_ENV"
+log_with_timestamp "START: PATH=$PATH"
+
+# Clear any old log entries to start fresh
+if [ -f "$LOG_DIR/app.log" ]; then
+    log_with_timestamp "START: Clearing old app.log (backing up to app.log.old)"
+    mv "$LOG_DIR/app.log" "$LOG_DIR/app.log.old" 2>/dev/null || true
+fi
+
+# Start the application with proper environment
+# Use setsid to detach from terminal and prevent SIGHUP
+log_with_timestamp "START: Starting application with setsid and nohup"
+setsid nohup "$VENV_PYTHON" "$APP_FILE" >> "$LOG_DIR/app.log" 2>&1 &
 APP_PID=$!
 
 log_with_timestamp "START: Application launched, PID: $APP_PID"
@@ -597,21 +609,68 @@ log_with_timestamp "START: Application launched, PID: $APP_PID"
 echo "$APP_PID" > "$PID_FILE"
 log_with_timestamp "START: PID saved to $PID_FILE"
 
-# Wait a moment to check if process started successfully
-log_with_timestamp "START: Waiting 2 seconds to verify process started"
-sleep 2
+# Function to check if app is still running and log details
+check_app_status() {
+    local pid=$1
+    local check_name=$2
+    if kill -0 "$pid" 2>/dev/null; then
+        log_with_timestamp "STATUS ($check_name): Process $pid is running"
+        if command -v ps >/dev/null 2>&1; then
+            local cmd=$(ps -p "$pid" -o command= 2>/dev/null || echo "unknown")
+            local cpu=$(ps -p "$pid" -o %cpu= 2>/dev/null | xargs || echo "unknown")
+            local mem=$(ps -p "$pid" -o %mem= 2>/dev/null | xargs || echo "unknown")
+            local state=$(ps -p "$pid" -o state= 2>/dev/null | xargs || echo "unknown")
+            log_with_timestamp "STATUS ($check_name): PID=$pid, CPU=${cpu}%, MEM=${mem}%, STATE=$state, CMD=$cmd"
+        fi
+        return 0
+    else
+        log_with_timestamp "STATUS ($check_name): Process $pid is NOT running"
+        return 1
+    fi
+}
 
-if kill -0 "$APP_PID" 2>/dev/null; then
+# Function to check app.log for errors
+check_app_logs() {
+    if [ -f "$LOG_DIR/app.log" ]; then
+        local error_count=$(grep -i "error\|exception\|traceback\|fatal" "$LOG_DIR/app.log" 2>/dev/null | wc -l || echo "0")
+        if [ "$error_count" -gt 0 ]; then
+            log_with_timestamp "WARNING: Found $error_count potential errors in app.log"
+            log_with_timestamp "ERROR: Last 30 lines of app.log with errors:"
+            grep -i "error\|exception\|traceback\|fatal" "$LOG_DIR/app.log" 2>/dev/null | tail -10 >> "$LOG_FILE" || true
+        fi
+        log_with_timestamp "STATUS: Last 5 lines of app.log:"
+        tail -5 "$LOG_DIR/app.log" >> "$LOG_FILE" 2>/dev/null || true
+    fi
+}
+
+# Wait and verify process started successfully
+log_with_timestamp "START: Waiting 3 seconds to verify process started"
+sleep 3
+
+if check_app_status "$APP_PID" "initial"; then
     print_success "Application started successfully (PID: $APP_PID)"
     log_with_timestamp "START: Application started successfully (PID: $APP_PID)"
     log_process_info "Application (newly started)" "$APP_PID"
+    check_app_logs
     
-    # Verify the application is actually running with the new code
-    log_with_timestamp "START: Verifying application is still running after 1 second"
-    sleep 1  # Give it a moment to fully start
-    if kill -0 "$APP_PID" 2>/dev/null; then
-        print_success "Verified: Application is running with latest code"
-        log_with_timestamp "START: Verified - Application is running with latest code"
+    # Extended monitoring - check multiple times over 10 seconds
+    log_with_timestamp "START: Starting extended monitoring (checking every 2 seconds for 10 seconds)"
+    MONITORING_PASSED=true
+    for i in 1 2 3 4 5; do
+        sleep 2
+        if ! check_app_status "$APP_PID" "monitor-$i"; then
+            print_error "Application crashed during monitoring (check $i/5)"
+            log_with_timestamp "ERROR: Application crashed during monitoring at check $i/5"
+            MONITORING_PASSED=false
+            check_app_logs
+            break
+        fi
+        log_with_timestamp "STATUS: Application still running after $((i * 2)) seconds"
+    done
+    
+    if [ "$MONITORING_PASSED" = true ]; then
+        print_success "Verified: Application is running stably (survived 10+ seconds)"
+        log_with_timestamp "START: Verified - Application is running stably"
         
         # Check if we can see the process command to verify it's using the correct file
         if command -v ps >/dev/null 2>&1; then
@@ -628,15 +687,24 @@ if kill -0 "$APP_PID" 2>/dev/null; then
         
         # Log file information again to confirm we're using the latest
         log_file_info "$APP_FILE"
-    else
-        print_error "Application process died immediately after start"
-        log_with_timestamp "ERROR: Application process died immediately after start"
-        log_with_timestamp "ERROR: PID $APP_PID is no longer running"
-        print_info "Check application logs: $LOG_DIR/app.log"
-        if [ -f "$LOG_DIR/app.log" ]; then
-            log_with_timestamp "ERROR: Last 20 lines of app.log:"
-            tail -20 "$LOG_DIR/app.log" >> "$LOG_FILE" 2>/dev/null || true
+        
+        # Final check after another 5 seconds
+        log_with_timestamp "START: Final stability check (waiting 5 more seconds)"
+        sleep 5
+        if check_app_status "$APP_PID" "final"; then
+            print_success "Application is running stably (survived 15+ seconds)"
+            log_with_timestamp "START: Application passed final stability check"
+        else
+            print_error "Application crashed after initial stability check"
+            log_with_timestamp "ERROR: Application crashed after initial stability check"
+            check_app_logs
+            rm -f "$PID_FILE"
+            exit 1
         fi
+    else
+        print_error "Application failed stability check - crashed during monitoring"
+        log_with_timestamp "ERROR: Application failed stability check"
+        check_app_logs
         rm -f "$PID_FILE"
         exit 1
     fi
@@ -648,10 +716,7 @@ else
     print_error "Application failed to start (PID: $APP_PID)"
     log_with_timestamp "ERROR: Application failed to start (PID: $APP_PID not found)"
     print_info "Check application logs: $LOG_DIR/app.log"
-    if [ -f "$LOG_DIR/app.log" ]; then
-        log_with_timestamp "ERROR: Last 20 lines of app.log:"
-        tail -20 "$LOG_DIR/app.log" >> "$LOG_FILE" 2>/dev/null || true
-    fi
+    check_app_logs
     rm -f "$PID_FILE"
     exit 1
 fi
