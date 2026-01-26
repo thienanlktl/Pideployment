@@ -1,0 +1,32 @@
+[Unit]
+Description=GitHub Webhook Listener for AWS IoT Pub/Sub GUI
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/PublishDemo
+Environment="PATH=/home/pi/PublishDemo/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="DISPLAY=:0"
+Environment="WEBHOOK_SECRET=change-me-to-a-strong-secret-key"
+Environment="WEBHOOK_PORT=9000"
+Environment="WEBHOOK_HOST=0.0.0.0"
+Environment="GIT_BRANCH=main"
+
+# Use the Python from the virtual environment
+# Note: Update paths below to match your actual project directory
+ExecStart=/home/pi/PublishDemo/venv/bin/python /home/pi/PublishDemo/webhook_listener.py
+
+# Restart on failure
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=iot-gui-webhook
+
+[Install]
+WantedBy=multi-user.target
+

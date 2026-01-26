@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=AWS IoT Pub/Sub GUI
+Comment=Launch AWS IoT Pub/Sub GUI Application
+Exec=bash -c "cd '/path/to/PublishDemo' && ./setup-and-run.sh"
+Path=/path/to/PublishDemo
+Icon=application-x-executable
+Terminal=true
+Categories=Network;Utility;
+StartupNotify=true
+Keywords=IoT;AWS;MQTT;PubSub;
+
