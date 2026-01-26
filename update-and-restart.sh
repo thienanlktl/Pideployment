@@ -402,6 +402,49 @@ else
 fi
 
 # ============================================================================
+# Step 8: Restart webhook listener service (if running as systemd service)
+# ============================================================================
+print_step "Step 6: Restarting Webhook Listener Service"
+
+WEBHOOK_SERVICE="iot-gui-webhook.service"
+
+# Check if systemd service exists and is enabled
+if systemctl list-unit-files | grep -q "$WEBHOOK_SERVICE"; then
+    print_info "Webhook listener service found: $WEBHOOK_SERVICE"
+    
+    # Check if service is active
+    if systemctl is-active --quiet "$WEBHOOK_SERVICE"; then
+        print_info "Restarting webhook listener service..."
+        if sudo systemctl restart "$WEBHOOK_SERVICE" 2>&1 | tee -a "$LOG_FILE"; then
+            sleep 2  # Wait a moment for service to restart
+            if systemctl is-active --quiet "$WEBHOOK_SERVICE"; then
+                print_success "Webhook listener service restarted successfully"
+                log_with_timestamp "Webhook listener service restarted"
+            else
+                print_warning "Webhook listener service restarted but may not be active"
+                log_with_timestamp "WARNING: Webhook listener service status unclear"
+            fi
+        else
+            print_warning "Failed to restart webhook listener service (may require sudo)"
+            log_with_timestamp "WARNING: Failed to restart webhook listener service"
+        fi
+    else
+        print_info "Webhook listener service is not active, attempting to start..."
+        if sudo systemctl start "$WEBHOOK_SERVICE" 2>&1 | tee -a "$LOG_FILE"; then
+            print_success "Webhook listener service started"
+            log_with_timestamp "Webhook listener service started"
+        else
+            print_warning "Failed to start webhook listener service (may require sudo)"
+            log_with_timestamp "WARNING: Failed to start webhook listener service"
+        fi
+    fi
+else
+    print_info "Webhook listener service not found or not installed as systemd service"
+    print_info "If running webhook listener manually, restart it to pick up changes"
+    log_with_timestamp "Webhook listener service not found - skipping restart"
+fi
+
+# ============================================================================
 # Summary
 # ============================================================================
 print_step "Update and Restart Complete"
