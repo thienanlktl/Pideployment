@@ -105,11 +105,24 @@ else
 fi
 
 # ============================================================================
-# Step 3: Pull latest code from GitHub
+# Step 3: Pull latest code from GitHub (main branch)
 # ============================================================================
-print_step "Step 1: Pulling Latest Code from GitHub"
+print_step "Step 1: Pulling Latest Code from Main Branch"
 
 if [ -n "$GIT_REMOTE" ]; then
+    # Ensure we're on the main branch
+    CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
+    if [ -z "$CURRENT_BRANCH" ] || [ "$CURRENT_BRANCH" != "$GIT_BRANCH" ]; then
+        print_info "Current branch: $CURRENT_BRANCH, switching to $GIT_BRANCH..."
+        if git checkout "$GIT_BRANCH" 2>&1 | tee -a "$LOG_FILE"; then
+            print_success "Switched to $GIT_BRANCH branch"
+        else
+            print_warning "Could not switch to $GIT_BRANCH, continuing with current branch..."
+        fi
+    else
+        print_info "Already on $GIT_BRANCH branch"
+    fi
+    
     print_info "Fetching latest changes from origin/$GIT_BRANCH..."
     
     # Check if using SSH and set up SSH key if needed
@@ -136,34 +149,45 @@ if [ -n "$GIT_REMOTE" ]; then
         fi
     fi
     
-    # Check if we're behind
+    # Always pull latest code from main (even if we think we're up to date)
+    print_info "Pulling latest code from origin/$GIT_BRANCH..."
+    
+    # Check current state for logging
     LOCAL_COMMIT=$(git rev-parse HEAD)
     REMOTE_COMMIT=$(git rev-parse "origin/$GIT_BRANCH" 2>/dev/null || echo "")
     
-    if [ -n "$REMOTE_COMMIT" ] && [ "$LOCAL_COMMIT" != "$REMOTE_COMMIT" ]; then
+    if [ -n "$REMOTE_COMMIT" ]; then
         print_info "Local commit: $LOCAL_COMMIT"
         print_info "Remote commit: $REMOTE_COMMIT"
-        print_info "Updates available. Pulling changes..."
-        
-        # Pull changes (with SSH key if available)
-        if git pull origin "$GIT_BRANCH" 2>&1 | tee -a "$LOG_FILE"; then
-            print_success "Pulled latest code successfully"
+    fi
+    
+    # Pull changes (with SSH key if available)
+    if git pull origin "$GIT_BRANCH" 2>&1 | tee -a "$LOG_FILE"; then
+        NEW_LOCAL_COMMIT=$(git rev-parse HEAD)
+        if [ "$LOCAL_COMMIT" != "$NEW_LOCAL_COMMIT" ]; then
+            print_success "Pulled latest code successfully (updated)"
             CODE_UPDATED=true
         else
-            print_warning "Failed to pull with current config, trying without SSH key..."
-            unset GIT_SSH_COMMAND
-            if git pull origin "$GIT_BRANCH" 2>&1 | tee -a "$LOG_FILE"; then
-                print_success "Pulled latest code successfully (without SSH key)"
-                CODE_UPDATED=true
-            else
-                print_error "Failed to pull from git"
-                log_with_timestamp "ERROR: git pull failed"
-                exit 1
-            fi
+            print_success "Pulled latest code successfully (already up to date)"
+            CODE_UPDATED=false
         fi
     else
-        print_info "Already up to date with origin/$GIT_BRANCH"
-        CODE_UPDATED=false
+        print_warning "Failed to pull with current config, trying without SSH key..."
+        unset GIT_SSH_COMMAND
+        if git pull origin "$GIT_BRANCH" 2>&1 | tee -a "$LOG_FILE"; then
+            NEW_LOCAL_COMMIT=$(git rev-parse HEAD)
+            if [ "$LOCAL_COMMIT" != "$NEW_LOCAL_COMMIT" ]; then
+                print_success "Pulled latest code successfully (updated, without SSH key)"
+                CODE_UPDATED=true
+            else
+                print_success "Pulled latest code successfully (already up to date, without SSH key)"
+                CODE_UPDATED=false
+            fi
+        else
+            print_error "Failed to pull from git"
+            log_with_timestamp "ERROR: git pull failed"
+            exit 1
+        fi
     fi
 else
     print_warning "Skipping git pull (no remote configured)"
