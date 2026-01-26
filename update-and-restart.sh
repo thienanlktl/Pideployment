@@ -2,16 +2,23 @@
 # ============================================================================
 # AWS IoT Pub/Sub GUI - Update and Restart Script
 # ============================================================================
-# This script:
+# This script updates and restarts the UI application (iot_pubsub_gui.py):
 #   1. Pulls latest code from GitHub (main branch)
 #   2. Updates Python dependencies if requirements.txt changed
-#   3. Gracefully stops the running application
-#   4. Restarts the application
+#   3. Gracefully stops the running iot_pubsub_gui.py application
+#   4. Restarts iot_pubsub_gui.py with the latest code
 #
 # Usage:
 #   ./update-and-restart.sh
 #
-# This script is typically called by the webhook listener or cron job
+# This script is typically called by:
+#   - Webhook listener (when ngrok URL is accessed or GitHub webhook received)
+#   - Cron job (if using cron fallback)
+#   - Manual execution
+#
+# When called via webhook listener root endpoint:
+#   https://tardy-vernita-howlingly.ngrok-free.dev/
+#   This will trigger this script to update and restart the UI
 # ============================================================================
 
 # Detect if running with sh and re-execute with bash if needed
@@ -80,8 +87,10 @@ print_step() {
 
 # Start logging
 log_with_timestamp "=== Update and Restart Started ==="
+log_with_timestamp "Updating UI application: iot_pubsub_gui.py"
 
-print_step "Update and Restart Process Started"
+print_step "Update and Restart Process Started - Updating UI Application (iot_pubsub_gui.py)"
+print_info "This will pull latest code and restart the GUI application"
 
 # ============================================================================
 # Step 1: Check if we're in a git repository
