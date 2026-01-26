@@ -261,7 +261,9 @@ fi
 # Get ngrok URL from API
 print_info "Getting ngrok public URL..."
 sleep 2
-NGROK_URL=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null | grep -oP '"public_url":"https://[^"]*' | head -1 | cut -d'"' -f4)
+# Get ngrok URL from API (using sed for better compatibility)
+NGROK_URL=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null | \
+    grep -o '"public_url":"https://[^"]*' | head -1 | sed 's/"public_url":"//')
 
 if [ -n "$NGROK_URL" ]; then
     print_success "ngrok tunnel is active!"

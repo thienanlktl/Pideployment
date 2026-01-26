@@ -24,7 +24,7 @@ if [ -z "$BASH_VERSION" ]; then
     fi
 fi
 
-set -e  # Exit on error (we'll handle errors gracefully)
+set +e  # Don't exit on error immediately - we'll handle errors gracefully
 
 # Colors for output
 RED='\033[0;31m'

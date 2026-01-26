@@ -82,11 +82,15 @@ print_info "Detecting IP address..."
 PI_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 
 if [ -z "$PI_IP" ]; then
-    PI_IP=$(ip addr show 2>/dev/null | grep -oP 'inet \K[\d.]+' | grep -v '127.0.0.1' | head -1)
+    # Get IP using sed for better compatibility
+    PI_IP=$(ip addr show 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | \
+        head -1 | sed 's/.*inet \([0-9.]*\).*/\1/' | awk '{print $1}')
 fi
 
 if [ -z "$PI_IP" ]; then
-    PI_IP=$(ifconfig 2>/dev/null | grep -oP 'inet \K[\d.]+' | grep -v '127.0.0.1' | head -1)
+    # Fallback to ifconfig
+    PI_IP=$(ifconfig 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | \
+        head -1 | sed 's/.*inet \([0-9.]*\).*/\1/' | awk '{print $1}')
 fi
 
 if [ -n "$PI_IP" ]; then

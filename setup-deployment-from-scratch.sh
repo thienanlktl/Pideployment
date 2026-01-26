@@ -166,7 +166,49 @@ if [ -f "$EXISTING_KEY" ]; then
         print_info "Will use existing private key and generate public key if needed"
         USE_EXISTING_KEY=true
     fi
+elif [ -f "$EXISTING_KEY_PUB" ]; then
+    # Only public key found in current directory
+    print_info "Found SSH public key in current directory: $EXISTING_KEY_PUB"
+    print_info "Looking for matching private key..."
     
+    # Check for private key in standard locations
+    STANDARD_KEY_LOCATIONS=(
+        "$SSH_DIR/id_ed25519"
+        "$SSH_DIR/id_ed25519_iot_gui"
+        "$HOME/id_ed25519"
+    )
+    
+    PRIVATE_KEY_FOUND=""
+    for key_loc in "${STANDARD_KEY_LOCATIONS[@]}"; do
+        if [ -f "$key_loc" ]; then
+            # Verify this private key matches the public key
+            if ssh-keygen -y -f "$key_loc" 2>/dev/null | diff -q - "$EXISTING_KEY_PUB" >/dev/null 2>&1; then
+                PRIVATE_KEY_FOUND="$key_loc"
+                print_success "Found matching private key: $PRIVATE_KEY_FOUND"
+                USE_EXISTING_KEY=true
+                break
+            fi
+        fi
+    done
+    
+    if [ -z "$PRIVATE_KEY_FOUND" ]; then
+        print_warning "Public key found but matching private key not found"
+        print_info "Private key should be at one of:"
+        for key_loc in "${STANDARD_KEY_LOCATIONS[@]}"; do
+            echo "  - $key_loc"
+        done
+        print_info "Will try to use existing key from ~/.ssh if available, or generate new key"
+        # Check if key already exists in .ssh
+        if [ -f "$SSH_DIR/id_ed25519" ]; then
+            print_info "Using existing key from ~/.ssh/id_ed25519"
+            PRIVATE_KEY_FOUND="$SSH_DIR/id_ed25519"
+            USE_EXISTING_KEY=true
+        fi
+    fi
+fi
+
+# If we found a key to use, set it up
+if [ "$USE_EXISTING_KEY" = true ]; then
     # Create .ssh directory if needed
     if [ ! -d "$SSH_DIR" ]; then
         print_info "Creating .ssh directory..."
@@ -174,27 +216,67 @@ if [ -f "$EXISTING_KEY" ]; then
         chmod 700 "$SSH_DIR"
     fi
     
-    # Copy key to .ssh directory
-    print_info "Setting up SSH key for git operations..."
-    cp "$EXISTING_KEY" "$KEY_PATH"
-    chmod 600 "$KEY_PATH"
-    
-    if [ -f "$EXISTING_KEY_PUB" ]; then
-        cp "$EXISTING_KEY_PUB" "$KEY_PATH.pub"
-        chmod 644 "$KEY_PATH.pub"
-    else
-        # Try to generate public key from private key
-        print_info "Generating public key from private key..."
-        if ssh-keygen -y -f "$KEY_PATH" > "$KEY_PATH.pub" 2>/dev/null; then
+    # Copy key to .ssh directory if it's not already there
+    if [ -f "$EXISTING_KEY" ]; then
+        # Private key is in current directory
+        print_info "Setting up SSH key for git operations..."
+        cp "$EXISTING_KEY" "$KEY_PATH"
+        chmod 600 "$KEY_PATH"
+        
+        if [ -f "$EXISTING_KEY_PUB" ]; then
+            cp "$EXISTING_KEY_PUB" "$KEY_PATH.pub"
             chmod 644 "$KEY_PATH.pub"
-            print_success "Public key generated"
         else
-            print_warning "Could not generate public key, but will try to use private key"
+            # Try to generate public key from private key
+            print_info "Generating public key from private key..."
+            if ssh-keygen -y -f "$KEY_PATH" > "$KEY_PATH.pub" 2>/dev/null; then
+                chmod 644 "$KEY_PATH.pub"
+                print_success "Public key generated"
+            else
+                print_warning "Could not generate public key, but will try to use private key"
+            fi
+        fi
+    elif [ -n "$PRIVATE_KEY_FOUND" ]; then
+        # Private key found in standard location
+        print_info "Using existing private key from: $PRIVATE_KEY_FOUND"
+        
+        # Copy or link to our key path
+        if [ "$PRIVATE_KEY_FOUND" != "$KEY_PATH" ]; then
+            cp "$PRIVATE_KEY_FOUND" "$KEY_PATH"
+            chmod 600 "$KEY_PATH"
+            
+            # Copy public key - prefer the one from current directory
+            if [ -f "$EXISTING_KEY_PUB" ]; then
+                # Use public key from current directory
+                cp "$EXISTING_KEY_PUB" "$KEY_PATH.pub"
+                chmod 644 "$KEY_PATH.pub"
+                print_success "Using public key from current directory"
+            elif [ -f "$PRIVATE_KEY_FOUND.pub" ]; then
+                cp "$PRIVATE_KEY_FOUND.pub" "$KEY_PATH.pub"
+                chmod 644 "$KEY_PATH.pub"
+            else
+                # Generate public key
+                print_info "Generating public key from private key..."
+                if ssh-keygen -y -f "$KEY_PATH" > "$KEY_PATH.pub" 2>/dev/null; then
+                    chmod 644 "$KEY_PATH.pub"
+                    print_success "Public key generated"
+                fi
+            fi
+        else
+            # Key already at target location
+            print_info "Key already at target location: $KEY_PATH"
+            # Still copy public key from current directory if it exists
+            if [ -f "$EXISTING_KEY_PUB" ]; then
+                cp "$EXISTING_KEY_PUB" "$KEY_PATH.pub"
+                chmod 644 "$KEY_PATH.pub"
+                print_success "Updated public key from current directory"
+            fi
         fi
     fi
     
-    # Configure SSH config
-    SSH_CONFIG="$SSH_DIR/config"
+    # Configure SSH config (only if we have a key)
+    if [ "$USE_EXISTING_KEY" = true ] && [ -f "$KEY_PATH" ]; then
+        SSH_CONFIG="$SSH_DIR/config"
     CONFIG_ENTRY="Host github.com-iot-gui
     HostName github.com
     User git
@@ -907,7 +989,9 @@ if [ -f "$PROJECT_DIR/setup-ngrok.sh" ]; then
     RETRY_COUNT=0
     while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
         sleep 2
-        NGROK_URL=$(curl -s --max-time 3 http://localhost:4040/api/tunnels 2>/dev/null | grep -oP '"public_url":"https://[^"]*' | head -1 | cut -d'"' -f4)
+        # Get ngrok URL from API (using sed instead of grep -oP for better compatibility)
+        NGROK_URL=$(curl -s --max-time 3 http://localhost:4040/api/tunnels 2>/dev/null | \
+            grep -o '"public_url":"https://[^"]*' | head -1 | sed 's/"public_url":"//')
         if [ -n "$NGROK_URL" ]; then
             WEBHOOK_URL="$NGROK_URL/webhook"
             echo "$WEBHOOK_URL" > "$PROJECT_DIR/.ngrok_url"

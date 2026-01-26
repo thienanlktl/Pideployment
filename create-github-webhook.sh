@@ -133,7 +133,9 @@ fi
 # If not found in file, try to get from ngrok API
 if [ -z "$WEBHOOK_URL" ] && command -v curl >/dev/null 2>&1; then
     print_info "Getting ngrok URL from API..."
-    NGROK_BASE_URL=$(curl -s --max-time 3 http://localhost:4040/api/tunnels 2>/dev/null | grep -oP '"public_url":"https://[^"]*' | head -1 | cut -d'"' -f4)
+    # Get ngrok URL from API (using sed for better compatibility)
+    NGROK_BASE_URL=$(curl -s --max-time 3 http://localhost:4040/api/tunnels 2>/dev/null | \
+        grep -o '"public_url":"https://[^"]*' | head -1 | sed 's/"public_url":"//')
     if [ -n "$NGROK_BASE_URL" ]; then
         WEBHOOK_URL="$NGROK_BASE_URL/webhook"
         print_success "Got webhook URL: $WEBHOOK_URL"
@@ -201,7 +203,9 @@ if echo "$EXISTING_WEBHOOKS" | grep -q "\"url\""; then
             [Yy]*)
                 UPDATE_EXISTING=true
                 # Get webhook ID
-                WEBHOOK_ID=$(echo "$EXISTING_WEBHOOKS" | grep -B 5 "$WEBHOOK_URL" | grep -oP '"id":\s*\K\d+' | head -1)
+                # Extract webhook ID (using sed for better compatibility)
+                WEBHOOK_ID=$(echo "$EXISTING_WEBHOOKS" | grep -B 5 "$WEBHOOK_URL" | \
+                    grep '"id"' | head -1 | sed 's/.*"id": *\([0-9]*\).*/\1/')
                 ;;
             *)
                 print_info "Keeping existing webhook"
