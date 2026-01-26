@@ -134,7 +134,9 @@ fi
 if [ -z "$WEBHOOK_URL" ] && command -v curl >/dev/null 2>&1; then
     print_info "Getting ngrok URL from API..."
     # Get ngrok URL from API (using sed for better compatibility)
-    NGROK_BASE_URL=$(curl -s --max-time 3 http://localhost:4040/api/tunnels 2>/dev/null | \
+    # Use port 4041 for ngrok web interface (changed from 4040 to avoid blocking)
+    NGROK_WEB_PORT="${NGROK_WEB_PORT:-4041}"
+    NGROK_BASE_URL=$(curl -s --max-time 3 http://localhost:$NGROK_WEB_PORT/api/tunnels 2>/dev/null | \
         grep -o '"public_url":"https://[^"]*' | head -1 | sed 's/"public_url":"//')
     if [ -n "$NGROK_BASE_URL" ]; then
         WEBHOOK_URL="$NGROK_BASE_URL/webhook"

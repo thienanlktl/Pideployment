@@ -72,7 +72,9 @@ fi
 # Try to get URL from ngrok API
 print_info "Getting current ngrok URL..."
 # Get ngrok URL from API (using sed for better compatibility)
-NGROK_URL=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null | \
+# Use port 4041 for ngrok web interface (changed from 4040 to avoid blocking)
+NGROK_WEB_PORT="${NGROK_WEB_PORT:-4041}"
+NGROK_URL=$(curl -s --max-time 3 http://localhost:$NGROK_WEB_PORT/api/tunnels 2>/dev/null | \
     grep -o '"public_url":"https://[^"]*' | head -1 | sed 's/"public_url":"//')
 
 if [ -n "$NGROK_URL" ]; then
@@ -110,7 +112,7 @@ else
     echo "  sudo systemctl status iot-gui-ngrok.service"
     echo ""
     print_info "Or view ngrok dashboard:"
-    echo "  http://localhost:4040"
+    echo "  http://localhost:${NGROK_WEB_PORT:-4041}"
     echo ""
     if [ -f "$NGROK_URL_FILE" ]; then
         print_info "Last known URL: $SAVED_URL"

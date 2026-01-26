@@ -277,39 +277,40 @@ if [ "$USE_EXISTING_KEY" = true ]; then
     # Configure SSH config (only if we have a key)
     if [ "$USE_EXISTING_KEY" = true ] && [ -f "$KEY_PATH" ]; then
         SSH_CONFIG="$SSH_DIR/config"
-    CONFIG_ENTRY="Host github.com-iot-gui
+        CONFIG_ENTRY="Host github.com-iot-gui
     HostName github.com
     User git
     IdentityFile $KEY_PATH
     IdentitiesOnly yes
 "
-    
-    if [ ! -f "$SSH_CONFIG" ] || ! grep -q "Host github.com-iot-gui" "$SSH_CONFIG" 2>/dev/null; then
-        print_info "Configuring SSH for GitHub..."
-        if [ ! -f "$SSH_CONFIG" ]; then
-            touch "$SSH_CONFIG"
-            chmod 600 "$SSH_CONFIG"
+        
+        if [ ! -f "$SSH_CONFIG" ] || ! grep -q "Host github.com-iot-gui" "$SSH_CONFIG" 2>/dev/null; then
+            print_info "Configuring SSH for GitHub..."
+            if [ ! -f "$SSH_CONFIG" ]; then
+                touch "$SSH_CONFIG"
+                chmod 600 "$SSH_CONFIG"
+            fi
+            echo "" >> "$SSH_CONFIG"
+            echo "# GitHub Deploy Key for IoT Pub/Sub GUI" >> "$SSH_CONFIG"
+            echo "$CONFIG_ENTRY" >> "$SSH_CONFIG"
+            print_success "SSH config updated"
         fi
-        echo "" >> "$SSH_CONFIG"
-        echo "# GitHub Deploy Key for IoT Pub/Sub GUI" >> "$SSH_CONFIG"
-        echo "$CONFIG_ENTRY" >> "$SSH_CONFIG"
-        print_success "SSH config updated"
-    fi
-    
-    # Test SSH connection
-    print_info "Testing SSH connection to GitHub..."
-    SSH_TEST_OUTPUT=$(ssh -i "$KEY_PATH" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -T git@github.com 2>&1)
-    if echo "$SSH_TEST_OUTPUT" | grep -q "successfully authenticated"; then
-        print_success "SSH connection to GitHub successful!"
-        SSH_WORKING=true
-    elif echo "$SSH_TEST_OUTPUT" | grep -qi "permission denied"; then
-        print_warning "SSH key may not be added to GitHub yet"
-        print_info "Will try SSH clone first, fallback to HTTPS if needed"
-        SSH_WORKING=false
-    else
-        print_warning "SSH connection test inconclusive"
-        print_info "Will try SSH clone first, fallback to HTTPS if needed"
-        SSH_WORKING=false
+        
+        # Test SSH connection
+        print_info "Testing SSH connection to GitHub..."
+        SSH_TEST_OUTPUT=$(ssh -i "$KEY_PATH" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -T git@github.com 2>&1)
+        if echo "$SSH_TEST_OUTPUT" | grep -q "successfully authenticated"; then
+            print_success "SSH connection to GitHub successful!"
+            SSH_WORKING=true
+        elif echo "$SSH_TEST_OUTPUT" | grep -qi "permission denied"; then
+            print_warning "SSH key may not be added to GitHub yet"
+            print_info "Will try SSH clone first, fallback to HTTPS if needed"
+            SSH_WORKING=false
+        else
+            print_warning "SSH connection test inconclusive"
+            print_info "Will try SSH clone first, fallback to HTTPS if needed"
+            SSH_WORKING=false
+        fi
     fi
 else
     print_info "No existing SSH key found in current directory"
@@ -876,13 +877,16 @@ else
     
     # Get current user and home directory
     CURRENT_USER=$(whoami)
+    CURRENT_GROUP=$(id -gn "$CURRENT_USER")
     
     # Create temporary service file with correct paths
     TEMP_SERVICE=$(mktemp)
     # Replace placeholders with actual values
+    # Also ensure webhook secret is properly loaded
     sed "s|/home/pi/Pideployment|$PROJECT_DIR|g" "$SERVICE_FILE" | \
     sed "s|User=pi|User=$CURRENT_USER|g" | \
-    sed "s|Group=pi|Group=$CURRENT_USER|g" > "$TEMP_SERVICE"
+    sed "s|Group=pi|Group=$CURRENT_GROUP|g" | \
+    sed "s|WEBHOOK_SECRET_PLACEHOLDER|\$(cat $PROJECT_DIR/.webhook_secret 2>/dev/null \|\| echo \"change-me-to-a-strong-secret-key\")|g" > "$TEMP_SERVICE"
     
     print_info "Installing systemd service..."
     if sudo cp "$TEMP_SERVICE" "$SYSTEMD_SERVICE"; then
@@ -898,10 +902,22 @@ else
             print_warning "Failed to enable service"
         }
         
+        # Ensure webhook secret file exists before starting service
+        if [ ! -f "$SECRET_FILE" ]; then
+            print_warning "Webhook secret file not found, creating it..."
+            if [ -n "$WEBHOOK_SECRET" ]; then
+                echo "$WEBHOOK_SECRET" > "$SECRET_FILE"
+                chmod 600 "$SECRET_FILE"
+                print_success "Webhook secret file created"
+            else
+                print_warning "Webhook secret not available, service may not work correctly"
+            fi
+        fi
+        
         # Automatically start the service
         print_info "Starting webhook service automatically..."
         if sudo systemctl start iot-gui-webhook.service; then
-            sleep 2
+            sleep 3
             
             if sudo systemctl is-active --quiet iot-gui-webhook.service; then
                 print_success "Webhook service is running"
@@ -909,6 +925,7 @@ else
             else
                 print_warning "Webhook service may not have started correctly"
                 print_info "Check status with: sudo systemctl status iot-gui-webhook.service"
+                print_info "Check logs with: sudo journalctl -u iot-gui-webhook.service -n 20"
                 SERVICE_INSTALLED=true
             fi
         else
@@ -944,81 +961,166 @@ echo ""
 NGROK_SETUP_SUCCESS=false
 WEBHOOK_URL=""
 
-# Check if ngrok setup script exists
-if [ -f "$PROJECT_DIR/setup-ngrok.sh" ]; then
-    print_info "Running ngrok setup..."
-    chmod +x "$PROJECT_DIR/setup-ngrok.sh"
+# First, check if ngrok endpoint is already online
+print_info "Checking if ngrok endpoint is already online..."
+NGROK_ALREADY_ONLINE=false
+
+# Check if ngrok process is running
+if pgrep -f "ngrok" >/dev/null 2>&1; then
+    print_info "ngrok process found, checking if tunnel is active..."
     
-    # Check if authtoken is provided via environment variable or use default
-    if [ -z "$NGROK_AUTHTOKEN" ]; then
-        # Use the pre-configured token automatically
-        NGROK_AUTHTOKEN="38HbghqIwfeBRpp4wdZHFkeTOT1_2Dh6671w4NZEUoFMpcVa6"
-        print_info "Using pre-configured ngrok authtoken automatically"
+    # Try multiple ports (4040 is default, 4041 is fallback)
+    NGROK_WEB_PORT=""
+    for port in 4040 4041 4042 4043 4044; do
+        if curl -s --max-time 2 http://localhost:$port/api/tunnels >/dev/null 2>&1; then
+            NGROK_WEB_PORT="$port"
+            print_info "Found ngrok API on port $port"
+            break
+        fi
+    done
+    
+    if [ -n "$NGROK_WEB_PORT" ]; then
+        sleep 1
+        # Try to get the tunnel URL
+        EXISTING_NGROK_URL=$(curl -s --max-time 3 http://localhost:$NGROK_WEB_PORT/api/tunnels 2>/dev/null | \
+            grep -o '"public_url":"https://[^"]*' | head -1 | sed 's/"public_url":"//')
+        
+        if [ -n "$EXISTING_NGROK_URL" ]; then
+            # Verify it's pointing to the correct port
+            TUNNEL_INFO=$(curl -s --max-time 3 http://localhost:$NGROK_WEB_PORT/api/tunnels 2>/dev/null)
+            if echo "$TUNNEL_INFO" | grep -q "\"addr\":\"localhost:$WEBHOOK_PORT\"" || \
+               echo "$TUNNEL_INFO" | grep -q "\"addr\":\"127.0.0.1:$WEBHOOK_PORT\""; then
+                print_success "ngrok endpoint is already online!"
+                print_info "Existing tunnel URL: $EXISTING_NGROK_URL"
+                
+                # Set webhook URL (ensure /webhook suffix)
+                if echo "$EXISTING_NGROK_URL" | grep -q "/webhook$"; then
+                    WEBHOOK_URL="$EXISTING_NGROK_URL"
+                else
+                    WEBHOOK_URL="$EXISTING_NGROK_URL/webhook"
+                fi
+                NGROK_URL="$EXISTING_NGROK_URL"
+                
+                # Save URL to file
+                echo "$WEBHOOK_URL" > "$PROJECT_DIR/.ngrok_url"
+                print_success "URL saved to: $PROJECT_DIR/.ngrok_url"
+                
+                NGROK_ALREADY_ONLINE=true
+                NGROK_SETUP_SUCCESS=true
+                print_success "Using existing ngrok endpoint - no setup needed"
+            else
+                print_warning "Existing tunnel may not be configured for port $WEBHOOK_PORT"
+                print_info "Will set up ngrok to ensure correct configuration"
+            fi
+        else
+            print_warning "ngrok is running but no active tunnel found"
+            print_info "Will set up ngrok"
+        fi
     else
-        print_info "Using ngrok authtoken from environment variable"
+        print_warning "ngrok process found but API not responding on any port"
+        print_info "Will set up ngrok"
     fi
-    
-    # Run ngrok setup with token (non-interactive)
-    print_info "Setting up ngrok automatically..."
-    if NGROK_AUTHTOKEN="$NGROK_AUTHTOKEN" "$PROJECT_DIR/setup-ngrok.sh" "$NGROK_AUTHTOKEN" >/dev/null 2>&1; then
-        NGROK_SETUP_SUCCESS=true
-        print_success "ngrok setup completed"
-    else
-        # Try again with output visible for debugging
-        print_info "Retrying ngrok setup..."
-        if NGROK_AUTHTOKEN="$NGROK_AUTHTOKEN" "$PROJECT_DIR/setup-ngrok.sh" "$NGROK_AUTHTOKEN"; then
+else
+    print_info "No ngrok process found, will set up ngrok"
+fi
+
+# If ngrok is already online, skip setup
+if [ "$NGROK_ALREADY_ONLINE" = true ]; then
+    print_info "Skipping ngrok setup - endpoint is already online"
+    echo ""
+else
+    # Check if ngrok setup script exists
+    if [ -f "$PROJECT_DIR/setup-ngrok.sh" ]; then
+        print_info "Running ngrok setup..."
+        chmod +x "$PROJECT_DIR/setup-ngrok.sh"
+        
+        # Check if authtoken is provided via environment variable or use default
+        if [ -z "$NGROK_AUTHTOKEN" ]; then
+            # Use the pre-configured token automatically
+            NGROK_AUTHTOKEN="38HbghqIwfeBRpp4wdZHFkeTOT1_2Dh6671w4NZEUoFMpcVa6"
+            print_info "Using pre-configured ngrok authtoken automatically"
+        else
+            print_info "Using ngrok authtoken from environment variable"
+        fi
+        
+        # Set tunnel port for ngrok setup
+        export TUNNEL_PORT="$WEBHOOK_PORT"
+        export PROJECT_DIR="$PROJECT_DIR"
+        
+        # Run ngrok setup with token (non-interactive)
+        # Use force run mode to disable web interface if ports are blocked
+        print_info "Setting up ngrok automatically (force run mode enabled)..."
+        if cd "$PROJECT_DIR" && NGROK_AUTHTOKEN="$NGROK_AUTHTOKEN" NGROK_FORCE_RUN=true TUNNEL_PORT="$WEBHOOK_PORT" PROJECT_DIR="$PROJECT_DIR" "$PROJECT_DIR/setup-ngrok.sh" "$NGROK_AUTHTOKEN" >/dev/null 2>&1; then
             NGROK_SETUP_SUCCESS=true
             print_success "ngrok setup completed"
         else
-            print_warning "ngrok setup had issues - will retry getting URL"
-            NGROK_SETUP_SUCCESS=false
+            # Try again with output visible for debugging
+            print_info "Retrying ngrok setup with visible output..."
+            if cd "$PROJECT_DIR" && NGROK_AUTHTOKEN="$NGROK_AUTHTOKEN" NGROK_FORCE_RUN=true TUNNEL_PORT="$WEBHOOK_PORT" PROJECT_DIR="$PROJECT_DIR" "$PROJECT_DIR/setup-ngrok.sh" "$NGROK_AUTHTOKEN"; then
+                NGROK_SETUP_SUCCESS=true
+                print_success "ngrok setup completed"
+            else
+                print_warning "ngrok setup had issues - will retry getting URL"
+                NGROK_SETUP_SUCCESS=false
+            fi
         fi
-    fi
-    
-    # Wait for ngrok to start and get URL
-    print_info "Waiting for ngrok to start and get public URL..."
-    
-    # Start ngrok service if not running
-    if ! sudo systemctl is-active --quiet iot-gui-ngrok.service 2>/dev/null; then
-        print_info "Starting ngrok service..."
-        sudo systemctl start iot-gui-ngrok.service 2>/dev/null || true
-    fi
-    
-    # Try to get ngrok URL with retries
-    MAX_RETRIES=15
-    RETRY_COUNT=0
-    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        sleep 2
-        # Get ngrok URL from API (using sed instead of grep -oP for better compatibility)
-        NGROK_URL=$(curl -s --max-time 3 http://localhost:4040/api/tunnels 2>/dev/null | \
-            grep -o '"public_url":"https://[^"]*' | head -1 | sed 's/"public_url":"//')
-        if [ -n "$NGROK_URL" ]; then
-            WEBHOOK_URL="$NGROK_URL/webhook"
-            echo "$WEBHOOK_URL" > "$PROJECT_DIR/.ngrok_url"
-            print_success "ngrok tunnel is active!"
-            print_success "Public URL obtained: $WEBHOOK_URL"
-            NGROK_SETUP_SUCCESS=true
-            break
-        else
+        
+        # Wait for ngrok to start and get URL
+        print_info "Waiting for ngrok to start and get public URL..."
+        
+        # Start ngrok service if not running
+        if ! sudo systemctl is-active --quiet iot-gui-ngrok.service 2>/dev/null; then
+            print_info "Starting ngrok service..."
+            sudo systemctl start iot-gui-ngrok.service 2>/dev/null || true
+            sleep 3
+        fi
+        
+        # Try to get ngrok URL with retries
+        MAX_RETRIES=20
+        RETRY_COUNT=0
+        NGROK_URL=""
+        while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            sleep 2
+            # Try multiple ports to find ngrok API
+            for port in 4040 4041 4042 4043 4044; do
+                if curl -s --max-time 2 http://localhost:$port/api/tunnels >/dev/null 2>&1; then
+                    NGROK_URL=$(curl -s --max-time 3 http://localhost:$port/api/tunnels 2>/dev/null | \
+                        grep -o '"public_url":"https://[^"]*' | head -1 | sed 's/"public_url":"//')
+                    if [ -n "$NGROK_URL" ]; then
+                        # Ensure webhook URL has /webhook suffix
+                        if echo "$NGROK_URL" | grep -q "/webhook$"; then
+                            WEBHOOK_URL="$NGROK_URL"
+                        else
+                            WEBHOOK_URL="$NGROK_URL/webhook"
+                        fi
+                        echo "$WEBHOOK_URL" > "$PROJECT_DIR/.ngrok_url"
+                        print_success "ngrok tunnel is active!"
+                        print_success "Public URL obtained: $WEBHOOK_URL"
+                        NGROK_SETUP_SUCCESS=true
+                        break 2
+                    fi
+                fi
+            done
+            
             RETRY_COUNT=$((RETRY_COUNT + 1))
             if [ $((RETRY_COUNT % 3)) -eq 0 ]; then
                 print_info "Waiting for ngrok URL... (attempt $RETRY_COUNT/$MAX_RETRIES)"
             fi
+        done
+        
+        if [ -z "$WEBHOOK_URL" ]; then
+            print_warning "Could not get ngrok URL automatically after $MAX_RETRIES attempts"
+            print_info "Checking ngrok service status..."
+            sudo systemctl status iot-gui-ngrok.service --no-pager -l | head -10 || true
+            print_info "You can get URL manually: ./get-ngrok-url.sh"
+            NGROK_SETUP_SUCCESS=false
         fi
-    done
-    
-    if [ -z "$WEBHOOK_URL" ]; then
-        print_warning "Could not get ngrok URL automatically after $MAX_RETRIES attempts"
-        print_info "Checking ngrok service status..."
-        sudo systemctl status iot-gui-ngrok.service --no-pager -l | head -10 || true
-        print_info "You can get URL manually: ./get-ngrok-url.sh"
-        NGROK_SETUP_SUCCESS=false
+    else
+        print_warning "setup-ngrok.sh not found"
+        print_info "You can set up ngrok manually or use cron fallback"
+        print_info "Cron fallback: ./setup-cron-fallback.sh"
     fi
-else
-    print_warning "setup-ngrok.sh not found"
-    print_info "You can set up ngrok manually or use cron fallback"
-    print_info "Cron fallback: ./setup-cron-fallback.sh"
-fi
+fi  # End of else block for NGROK_ALREADY_ONLINE check
 
 echo ""
 
@@ -1034,6 +1136,16 @@ if [ -n "$WEBHOOK_URL" ] && [ -f "$PROJECT_DIR/create-github-webhook.sh" ]; then
     print_info "Attempting to create GitHub webhook automatically..."
     chmod +x "$PROJECT_DIR/create-github-webhook.sh"
     
+    # Ensure webhook URL has /webhook suffix
+    if ! echo "$WEBHOOK_URL" | grep -q "/webhook$"; then
+        if echo "$WEBHOOK_URL" | grep -q "/$"; then
+            WEBHOOK_URL="${WEBHOOK_URL}webhook"
+        else
+            WEBHOOK_URL="${WEBHOOK_URL}/webhook"
+        fi
+        print_info "Updated webhook URL to: $WEBHOOK_URL"
+    fi
+    
     # Check for GitHub token: environment variable, .github_token file, or default
     if [ -z "$GITHUB_TOKEN" ]; then
         # Check for token file in project directory
@@ -1043,18 +1155,28 @@ if [ -n "$WEBHOOK_URL" ] && [ -f "$PROJECT_DIR/create-github-webhook.sh" ]; then
                 print_info "Using GitHub token from .github_token file"
             fi
         fi
+    else
+        print_info "Using GitHub token from environment variable"
     fi
     
     # Check if GitHub token is provided
     if [ -n "$GITHUB_TOKEN" ]; then
-        print_info "Using GitHub token from environment variable"
-        WEBHOOK_RESULT=$(GITHUB_TOKEN="$GITHUB_TOKEN" NON_INTERACTIVE=1 "$PROJECT_DIR/create-github-webhook.sh" 2>&1)
+        # Export environment variables for the script
+        export GITHUB_TOKEN
+        export GITHUB_USER
+        export REPO_NAME
+        export PROJECT_DIR
+        export NON_INTERACTIVE=1
+        
+        print_info "Creating GitHub webhook with URL: $WEBHOOK_URL"
+        WEBHOOK_RESULT=$(cd "$PROJECT_DIR" && GITHUB_TOKEN="$GITHUB_TOKEN" GITHUB_USER="$GITHUB_USER" REPO_NAME="$REPO_NAME" PROJECT_DIR="$PROJECT_DIR" NON_INTERACTIVE=1 "$PROJECT_DIR/create-github-webhook.sh" 2>&1)
+        
         if echo "$WEBHOOK_RESULT" | grep -qi "successfully\|created\|updated"; then
             WEBHOOK_CREATED=true
             print_success "GitHub webhook created/updated successfully!"
         else
             print_warning "Webhook creation result unclear"
-            echo "$WEBHOOK_RESULT" | tail -5
+            echo "$WEBHOOK_RESULT" | tail -10
             print_info "Checking if webhook exists..."
             # Try to verify webhook exists
             EXISTING_WEBHOOKS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
@@ -1064,26 +1186,8 @@ if [ -n "$WEBHOOK_URL" ] && [ -f "$PROJECT_DIR/create-github-webhook.sh" ]; then
                 print_success "Webhook already exists and points to correct URL!"
             else
                 print_warning "Webhook may not have been created"
-            fi
-        fi
-    elif [ -f "$PROJECT_DIR/.github_token" ]; then
-        GITHUB_TOKEN=$(cat "$PROJECT_DIR/.github_token" 2>/dev/null)
-        if [ -n "$GITHUB_TOKEN" ]; then
-            print_info "Using GitHub token from .github_token file"
-            WEBHOOK_RESULT=$(GITHUB_TOKEN="$GITHUB_TOKEN" NON_INTERACTIVE=1 "$PROJECT_DIR/create-github-webhook.sh" 2>&1)
-            if echo "$WEBHOOK_RESULT" | grep -qi "successfully\|created\|updated"; then
-                WEBHOOK_CREATED=true
-                print_success "GitHub webhook created/updated successfully!"
-            else
-                print_warning "Failed to create webhook automatically"
                 print_info "You can create it manually: ./create-github-webhook.sh"
             fi
-        else
-            print_warning "GitHub token file exists but is empty"
-            print_info "To create webhook automatically:"
-            print_info "  1. Get token: https://github.com/settings/tokens"
-            print_info "  2. Save to: echo 'your_token' > .github_token"
-            print_info "  3. Re-run this step or: ./create-github-webhook.sh"
         fi
     else
         print_warning "GitHub token not provided - webhook creation skipped"
@@ -1105,6 +1209,8 @@ else
     else
         print_warning "create-github-webhook.sh not found"
         print_info "Create webhook manually at: https://github.com/$GITHUB_USER/$REPO_NAME/settings/hooks"
+        print_info "  URL: $WEBHOOK_URL"
+        print_info "  Secret: $WEBHOOK_SECRET"
     fi
 fi
 
@@ -1127,11 +1233,17 @@ fi
 
 # Test webhook endpoint
 print_info "Testing webhook endpoint..."
-if curl -s http://localhost:$WEBHOOK_PORT/health >/dev/null 2>&1; then
+sleep 2  # Give service time to start
+if curl -s --max-time 5 http://localhost:$WEBHOOK_PORT/health >/dev/null 2>&1; then
     print_success "Webhook listener is responding"
+    HEALTH_RESPONSE=$(curl -s --max-time 5 http://localhost:$WEBHOOK_PORT/health 2>/dev/null)
+    if echo "$HEALTH_RESPONSE" | grep -q "healthy"; then
+        print_success "Webhook health check passed"
+    fi
 else
     print_warning "Webhook listener may not be running"
     print_info "Start service: sudo systemctl start iot-gui-webhook.service"
+    print_info "Check logs: sudo journalctl -u iot-gui-webhook.service -n 20"
 fi
 echo ""
 
@@ -1330,7 +1442,16 @@ fi
 
 # Check ngrok
 if [ "$NGROK_SETUP_SUCCESS" = true ] && [ -n "$WEBHOOK_URL" ]; then
-    if curl -s http://localhost:4040/api/tunnels >/dev/null 2>&1; then
+    # Try multiple ports to find ngrok API
+    NGROK_API_FOUND=false
+    for port in 4040 4041 4042 4043 4044; do
+        if curl -s --max-time 2 http://localhost:$port/api/tunnels >/dev/null 2>&1; then
+            NGROK_API_FOUND=true
+            break
+        fi
+    done
+    
+    if [ "$NGROK_API_FOUND" = true ]; then
         print_success "✓ ngrok tunnel is active"
         print_info "   Public URL: $WEBHOOK_URL"
     else
