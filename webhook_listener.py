@@ -32,7 +32,8 @@ except ImportError:
 # ============================================================================
 
 # Webhook secret (set via environment variable or default)
-WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', 'change-me-to-a-strong-secret-key')
+# Trim whitespace from secret to avoid issues
+WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', 'change-me-to-a-strong-secret-key').strip()
 WEBHOOK_PORT = int(os.environ.get('WEBHOOK_PORT', '9000'))
 WEBHOOK_HOST = os.environ.get('WEBHOOK_HOST', '0.0.0.0')  # Listen on all interfaces
 
@@ -85,27 +86,50 @@ def verify_webhook_signature(payload_body, signature_header):
     Returns:
         bool: True if signature is valid, False otherwise
     """
+    # If secret is blank/empty, skip verification (GitHub allows blank secrets)
+    if not WEBHOOK_SECRET or WEBHOOK_SECRET.strip() == '' or WEBHOOK_SECRET == 'change-me-to-a-strong-secret-key':
+        if signature_header:
+            logger.warning("Webhook secret is blank/empty, but signature header provided - skipping verification")
+        else:
+            logger.info("Webhook secret is blank/empty - signature verification skipped")
+        return True  # Allow request when secret is blank
+    
+    # If secret is set but no signature provided, reject
     if not signature_header:
-        logger.warning("No signature header provided")
+        logger.warning("No signature header provided but secret is configured")
+        logger.warning("GitHub webhook signature verification requires X-Hub-Signature-256 header")
         return False
     
     # GitHub sends signature as: sha256=<hash>
     if not signature_header.startswith('sha256='):
-        logger.warning("Invalid signature format")
+        logger.warning(f"Invalid signature format. Expected 'sha256=...', got: {signature_header[:20]}...")
         return False
     
     # Extract hash from header
     received_hash = signature_header[7:]  # Remove 'sha256=' prefix
     
     # Calculate expected hash
-    expected_hash = hmac.new(
-        WEBHOOK_SECRET.encode('utf-8'),
-        payload_body,
-        hashlib.sha256
-    ).hexdigest()
+    try:
+        expected_hash = hmac.new(
+            WEBHOOK_SECRET.encode('utf-8'),
+            payload_body,
+            hashlib.sha256
+        ).hexdigest()
+    except Exception as e:
+        logger.error(f"Error calculating signature hash: {e}")
+        return False
     
     # Use constant-time comparison to prevent timing attacks
-    return hmac.compare_digest(received_hash, expected_hash)
+    is_valid = hmac.compare_digest(received_hash, expected_hash)
+    
+    if not is_valid:
+        logger.warning("Signature verification failed!")
+        logger.warning(f"Received hash (first 10 chars): {received_hash[:10]}...")
+        logger.warning(f"Expected hash (first 10 chars): {expected_hash[:10]}...")
+        logger.warning("This usually means the webhook secret in GitHub doesn't match the secret in .webhook_secret file")
+        logger.warning(f"Secret length: {len(WEBHOOK_SECRET)} characters")
+    
+    return is_valid
 
 
 def is_push_to_main(payload):
@@ -373,14 +397,20 @@ def webhook():
 @app.route('/health', methods=['GET'])
 def health():
     """
-    Health check endpoint
+    Health check endpoint with webhook secret status
     """
+    secret_status = "configured" if WEBHOOK_SECRET and WEBHOOK_SECRET != 'change-me-to-a-strong-secret-key' else "not_configured"
+    secret_length = len(WEBHOOK_SECRET) if WEBHOOK_SECRET else 0
+    
     return jsonify({
         'status': 'healthy',
         'service': 'iot-gui-webhook',
         'timestamp': datetime.now().isoformat(),
         'update_script_exists': UPDATE_SCRIPT.exists(),
-        'target_branch': TARGET_BRANCH
+        'target_branch': TARGET_BRANCH,
+        'webhook_secret_status': secret_status,
+        'webhook_secret_length': secret_length,
+        'note': 'If webhook secret is not_configured, ensure .webhook_secret file exists and matches GitHub webhook secret'
     }), 200
 
 
@@ -499,16 +529,110 @@ def trigger():
     }), 202  # 202 Accepted - request accepted for processing
 
 
-@app.route('/', methods=['GET'])
+@app.route('/', methods=['GET', 'POST'])
 def index():
     """
-    Root endpoint - triggers update-and-restart.sh when accessed
-    This will:
-    1. Pull latest code from main branch
-    2. Update Python dependencies
-    3. Stop the running iot_pubsub_gui.py application
-    4. Restart iot_pubsub_gui.py with the latest code
+    Root endpoint - handles both GET and POST requests
+    - GET: triggers update-and-restart.sh when accessed
+    - POST: handles GitHub webhook events (when webhook URL is set to root)
     """
+    # Handle POST requests as webhooks (when GitHub sends to root URL)
+    if request.method == 'POST':
+        logger.info("Root endpoint received POST request - treating as webhook")
+        # Get raw payload for signature verification
+        payload_body = request.get_data()
+        
+        # Get signature from header
+        signature = request.headers.get('X-Hub-Signature-256', '')
+        
+        # Verify signature (will skip if secret is blank)
+        if not verify_webhook_signature(payload_body, signature):
+            logger.warning("Invalid webhook signature - rejecting request")
+            abort(401, description="Invalid signature")
+        
+        # Parse JSON payload
+        try:
+            payload = json.loads(payload_body.decode('utf-8'))
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON payload: {e}")
+            abort(400, description="Invalid JSON")
+        
+        # Log webhook event
+        event_type = request.headers.get('X-GitHub-Event', 'unknown')
+        logger.info(f"Received webhook event at root endpoint: {event_type}")
+        
+        # Only process push events
+        if event_type != 'push':
+            logger.info(f"Ignoring non-push event: {event_type}")
+            return jsonify({
+                'status': 'ignored',
+                'message': f'Event type "{event_type}" is not a push event'
+            }), 200
+        
+        # Check if push is to main branch
+        if not is_push_to_main(payload):
+            logger.info("Push event is not to target branch, ignoring")
+            return jsonify({
+                'status': 'ignored',
+                'message': f'Push is not to {TARGET_BRANCH} branch'
+            }), 200
+        
+        # Extract commit information
+        try:
+            commits = payload.get('commits', [])
+            commit_count = len(commits)
+            commit_messages = [c.get('message', '')[:50] for c in commits[:3]]
+            
+            logger.info(f"Processing push to {TARGET_BRANCH} with {commit_count} commit(s)")
+            logger.info(f"Commit messages: {', '.join(commit_messages)}")
+        except Exception as e:
+            logger.warning(f"Could not extract commit info: {e}")
+            commit_count = 0
+            commit_messages = []
+        
+        # Run update script in background thread to keep webhook listener responsive
+        logger.info("Triggering update and restart in background...")
+        add_log_entry('info', 'Webhook triggered update and restart (root endpoint, running in background)', {
+            'event_type': event_type,
+            'branch': TARGET_BRANCH,
+            'commit_count': commit_count,
+            'commit_messages': commit_messages
+        })
+        
+        def run_update_in_background():
+            """Run update script in background thread"""
+            try:
+                success, output, error = run_update_script()
+                
+                if success:
+                    logger.info("Update and restart completed successfully (root endpoint webhook, background)")
+                    add_log_entry('success', 'Update and restart completed successfully via webhook at root (background)', {
+                        'commits': commit_count
+                    })
+                else:
+                    logger.error(f"Update and restart failed (root endpoint webhook, background): {error}")
+                    add_log_entry('error', 'Update and restart failed via webhook at root (background)', {
+                        'error': error[:500]
+                    })
+            except Exception as e:
+                logger.error(f"Error in background update thread (root endpoint webhook): {e}")
+                add_log_entry('error', f'Background update thread error (root endpoint webhook): {str(e)}')
+        
+        # Start update in background thread
+        update_thread = threading.Thread(target=run_update_in_background, daemon=True)
+        update_thread.start()
+        
+        # Return immediately so webhook listener can continue handling requests
+        logger.info("Update process started in background (webhook at root), webhook listener continues running")
+        return jsonify({
+            'status': 'accepted',
+            'message': 'Update and restart triggered successfully (running in background)',
+            'commits': commit_count,
+            'timestamp': datetime.now().isoformat(),
+            'note': 'The update is running in the background. Check logs for completion status.'
+        }), 202  # 202 Accepted - request accepted for processing
+    
+    # Handle GET requests (original behavior)
     logger.info("Root endpoint accessed - triggering UI update via update-and-restart.sh")
     logger.info("This will update and restart iot_pubsub_gui.py application")
     
