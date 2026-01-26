@@ -43,6 +43,23 @@ fi
 # Don't exit on error immediately - we'll handle errors gracefully
 set +e
 
+# Initialize all variables to prevent undefined variable errors
+SERVICE_INSTALLED=false
+NGROK_SETUP_SUCCESS=false
+WEBHOOK_CREATED=false
+APP_STARTED=false
+SSH_KEY_ADDED=false
+USE_EXISTING_KEY=false
+SSH_WORKING=false
+REPO_CLONED=false
+CLONE_REPO=false
+NGROK_ALREADY_ONLINE=false
+WEBHOOK_URL=""
+NGROK_URL=""
+WEBHOOK_SECRET=""
+SECRET_FILE=""
+ALL_SYSTEMS_GO=false
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -77,7 +94,29 @@ print_step() {
 
 # Function to check if command exists
 command_exists() {
+    if [ -z "$1" ]; then
+        return 1
+    fi
     command -v "$1" >/dev/null 2>&1
+}
+
+# Function to safely execute command with error handling
+safe_execute() {
+    local cmd="$1"
+    local description="${2:-Executing command}"
+    
+    if [ -z "$cmd" ]; then
+        print_error "No command provided to safe_execute"
+        return 1
+    fi
+    
+    print_info "$description..."
+    if eval "$cmd"; then
+        return 0
+    else
+        print_warning "Command failed: $cmd"
+        return 1
+    fi
 }
 
 # Function to check if we're in a git repository
@@ -85,8 +124,12 @@ is_git_repo() {
     git rev-parse --git-dir >/dev/null 2>&1
 }
 
-# Get script directory
+# Get script directory (handle symlinks and spaces in path)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -z "$SCRIPT_DIR" ] || [ ! -d "$SCRIPT_DIR" ]; then
+    echo "Error: Cannot determine script directory" >&2
+    exit 1
+fi
 
 # Configuration (user can modify these via environment variables)
 GITHUB_USER="${GITHUB_USER:-thienanlktl}"
@@ -106,6 +149,18 @@ else
     # Default to ~/Pideployment or current directory name
     PROJECT_DIR="${PROJECT_DIR:-$HOME/$REPO_NAME}"
     REPO_CLONED=false
+fi
+
+# Validate PROJECT_DIR is set
+if [ -z "$PROJECT_DIR" ]; then
+    print_error "PROJECT_DIR is not set - cannot continue"
+    exit 1
+fi
+
+# Ensure PROJECT_DIR is an absolute path
+if [ "${PROJECT_DIR#/}" = "$PROJECT_DIR" ]; then
+    # Not an absolute path, make it absolute
+    PROJECT_DIR="$(cd "$PROJECT_DIR" 2>/dev/null && pwd || echo "$HOME/$REPO_NAME")"
 fi
 
 # Print header
@@ -400,10 +455,21 @@ if [ "$CLONE_REPO" = true ]; then
 fi
 
 # Change to project directory
+if [ ! -d "$PROJECT_DIR" ]; then
+    print_error "Project directory does not exist: $PROJECT_DIR"
+    exit 1
+fi
+
 cd "$PROJECT_DIR" || {
     print_error "Cannot access project directory: $PROJECT_DIR"
     exit 1
 }
+
+# Ensure we're in the right directory
+if [ "$(pwd)" != "$PROJECT_DIR" ]; then
+    print_error "Failed to change to project directory"
+    exit 1
+fi
 
 # Verify we're in a git repository now
 if ! is_git_repo; then
@@ -832,9 +898,19 @@ print_info "Secret will be displayed again at the end of setup"
 
 # Save secret to a file (with restricted permissions)
 SECRET_FILE="$PROJECT_DIR/.webhook_secret"
-echo "$WEBHOOK_SECRET" > "$SECRET_FILE"
-chmod 600 "$SECRET_FILE"
-print_info "Secret saved to: $SECRET_FILE (restricted permissions)"
+if [ -n "$WEBHOOK_SECRET" ]; then
+    echo "$WEBHOOK_SECRET" > "$SECRET_FILE" || {
+        print_error "Failed to save webhook secret to file"
+        exit 1
+    }
+    chmod 600 "$SECRET_FILE" || {
+        print_warning "Failed to set permissions on secret file"
+    }
+    print_info "Secret saved to: $SECRET_FILE (restricted permissions)"
+else
+    print_error "Webhook secret is empty - cannot save"
+    exit 1
+fi
 
 # ============================================================================
 # Step 9: Make scripts executable
@@ -883,13 +959,26 @@ else
     CURRENT_GROUP=$(id -gn "$CURRENT_USER")
     
     # Create temporary service file with correct paths
-    TEMP_SERVICE=$(mktemp)
+    TEMP_SERVICE=$(mktemp 2>/dev/null || echo "/tmp/iot-gui-webhook-service-$$")
+    if [ -z "$TEMP_SERVICE" ]; then
+        print_error "Failed to create temporary file"
+        exit 1
+    fi
+    
     # Replace placeholders with actual values
     # Also ensure webhook secret is properly loaded
-    sed "s|/home/pi/Pideployment|$PROJECT_DIR|g" "$SERVICE_FILE" | \
-    sed "s|User=pi|User=$CURRENT_USER|g" | \
-    sed "s|Group=pi|Group=$CURRENT_GROUP|g" | \
-    sed "s|WEBHOOK_SECRET_PLACEHOLDER|\$(cat $PROJECT_DIR/.webhook_secret 2>/dev/null \|\| echo \"change-me-to-a-strong-secret-key\")|g" > "$TEMP_SERVICE"
+    # Use proper escaping for sed
+    ESCAPED_PROJECT_DIR=$(echo "$PROJECT_DIR" | sed 's/[[\.*^$()+?{|]/\\&/g')
+    ESCAPED_SECRET_FILE=$(echo "$PROJECT_DIR/.webhook_secret" | sed 's/[[\.*^$()+?{|]/\\&/g')
+    
+    if ! sed "s|/home/pi/Pideployment|$ESCAPED_PROJECT_DIR|g" "$SERVICE_FILE" | \
+        sed "s|User=pi|User=$CURRENT_USER|g" | \
+        sed "s|Group=pi|Group=$CURRENT_GROUP|g" | \
+        sed "s|WEBHOOK_SECRET_PLACEHOLDER|\$(cat $ESCAPED_SECRET_FILE 2>/dev/null \|\| echo \"change-me-to-a-strong-secret-key\")|g" > "$TEMP_SERVICE" 2>/dev/null; then
+        print_error "Failed to process service file"
+        rm -f "$TEMP_SERVICE"
+        exit 1
+    fi
     
     print_info "Installing systemd service..."
     if sudo cp "$TEMP_SERVICE" "$SYSTEMD_SERVICE"; then
@@ -1260,16 +1349,25 @@ fi
 # Test webhook endpoint
 print_info "Testing webhook endpoint..."
 sleep 2  # Give service time to start
-if curl -s --max-time 5 http://localhost:$WEBHOOK_PORT/health >/dev/null 2>&1; then
-    print_success "Webhook listener is responding"
-    HEALTH_RESPONSE=$(curl -s --max-time 5 http://localhost:$WEBHOOK_PORT/health 2>/dev/null)
-    if echo "$HEALTH_RESPONSE" | grep -q "healthy"; then
-        print_success "Webhook health check passed"
-    fi
+
+# Check if curl is available
+if ! command_exists curl; then
+    print_warning "curl not found - skipping webhook endpoint test"
+    print_info "Install curl: sudo apt-get install -y curl"
 else
-    print_warning "Webhook listener may not be running"
-    print_info "Start service: sudo systemctl start iot-gui-webhook.service"
-    print_info "Check logs: sudo journalctl -u iot-gui-webhook.service -n 20"
+    if curl -s --max-time 5 http://localhost:$WEBHOOK_PORT/health >/dev/null 2>&1; then
+        print_success "Webhook listener is responding"
+        HEALTH_RESPONSE=$(curl -s --max-time 5 http://localhost:$WEBHOOK_PORT/health 2>/dev/null || echo "")
+        if [ -n "$HEALTH_RESPONSE" ] && echo "$HEALTH_RESPONSE" | grep -q "healthy"; then
+            print_success "Webhook health check passed"
+        else
+            print_warning "Webhook health check response unclear"
+        fi
+    else
+        print_warning "Webhook listener may not be running"
+        print_info "Start service: sudo systemctl start iot-gui-webhook.service"
+        print_info "Check logs: sudo journalctl -u iot-gui-webhook.service -n 20"
+    fi
 fi
 echo ""
 
@@ -1298,8 +1396,21 @@ else
     fi
     
     # Activate virtual environment if not already activated
-    if [ -z "$VIRTUAL_ENV" ] || [ "$VIRTUAL_ENV" != "$VENV_DIR" ]; then
-        source "$VENV_DIR/bin/activate"
+    VENV_DIR="$PROJECT_DIR/venv"
+    if [ ! -d "$VENV_DIR" ]; then
+        print_error "Virtual environment not found: $VENV_DIR"
+        print_info "Please run the setup script first to create the virtual environment"
+        APP_STARTED=false
+    elif [ -z "$VIRTUAL_ENV" ] || [ "$VIRTUAL_ENV" != "$VENV_DIR" ]; then
+        if [ -f "$VENV_DIR/bin/activate" ]; then
+            source "$VENV_DIR/bin/activate" || {
+                print_error "Failed to activate virtual environment"
+                APP_STARTED=false
+            }
+        else
+            print_error "Virtual environment activation script not found"
+            APP_STARTED=false
+        fi
     fi
     
     # Check if DISPLAY is set (for GUI)
