@@ -224,7 +224,10 @@ if [ -f "$EXISTING_KEY" ]; then
         print_info "Will use existing private key and generate public key if needed"
         USE_EXISTING_KEY=true
     fi
-elif [ -f "$EXISTING_KEY_PUB" ]; then
+fi
+
+# Check if only public key exists (separate check)
+if [ "$USE_EXISTING_KEY" != true ] && [ -f "$EXISTING_KEY_PUB" ]; then
     # Only public key found in current directory
     print_info "Found SSH public key in current directory: $EXISTING_KEY_PUB"
     print_info "Looking for matching private key..."
