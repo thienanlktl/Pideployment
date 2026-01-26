@@ -132,6 +132,13 @@ if [ -z "$SCRIPT_DIR" ] || [ ! -d "$SCRIPT_DIR" ]; then
     exit 1
 fi
 
+# Get current working directory (where script is run from)
+CURRENT_DIR="$(pwd)"
+if [ -z "$CURRENT_DIR" ] || [ ! -d "$CURRENT_DIR" ]; then
+    echo "Error: Cannot determine current working directory" >&2
+    exit 1
+fi
+
 # Configuration (user can modify these via environment variables)
 GITHUB_USER="${GITHUB_USER:-thienanlktl}"
 REPO_NAME="${REPO_NAME:-Pideployment}"
@@ -181,8 +188,8 @@ echo "  - Project Directory: $PROJECT_DIR"
 echo "  - Webhook Port: $WEBHOOK_PORT"
 echo ""
 
-# Check if SSH key exists in current directory (before cloning)
-EXISTING_KEY="$SCRIPT_DIR/id_ed25519_repo_pideployment"
+# Check if SSH key exists in current working directory (before cloning)
+EXISTING_KEY="$CURRENT_DIR/id_ed25519_repo_pideployment"
 if [ -f "$EXISTING_KEY" ]; then
     print_info "Found existing SSH key in current directory: $EXISTING_KEY"
     print_info "Will automatically set it up and use it for SSH clone"
@@ -209,13 +216,13 @@ echo ""
 print_step "Step 0: Checking for Existing SSH Key"
 
 SSH_DIR="$HOME/.ssh"
-EXISTING_KEY="$SCRIPT_DIR/id_ed25519_repo_pideployment"
-EXISTING_KEY_PUB="$SCRIPT_DIR/id_ed25519_repo_pideployment.pub"
+EXISTING_KEY="$CURRENT_DIR/id_ed25519_repo_pideployment"
+EXISTING_KEY_PUB="$CURRENT_DIR/id_ed25519_repo_pideployment.pub"
 KEY_NAME="id_ed25519_repo_pideployment"
-KEY_PATH="$SCRIPT_DIR/$KEY_NAME"
+KEY_PATH="$CURRENT_DIR/$KEY_NAME"
 USE_EXISTING_KEY=false
 
-# Check if SSH key exists in current directory
+# Check if SSH key exists in current working directory
 if [ -f "$EXISTING_KEY" ]; then
     print_success "Found existing SSH private key: $EXISTING_KEY"
     
@@ -238,7 +245,7 @@ if [ "$USE_EXISTING_KEY" != true ] && [ -f "$EXISTING_KEY_PUB" ]; then
     
     # Check for private key in standard locations
     STANDARD_KEY_LOCATIONS=(
-        "$SCRIPT_DIR/id_ed25519_repo_pideployment"
+        "$CURRENT_DIR/id_ed25519_repo_pideployment"
         "$SSH_DIR/id_ed25519_repo_pideployment"
         "$HOME/id_ed25519_repo_pideployment"
     )
@@ -263,10 +270,10 @@ if [ "$USE_EXISTING_KEY" != true ] && [ -f "$EXISTING_KEY_PUB" ]; then
             echo "  - $key_loc"
         done
         print_info "Will try to use existing key from ~/.ssh if available, or generate new key"
-        # Check if key already exists in current directory
-        if [ -f "$SCRIPT_DIR/id_ed25519_repo_pideployment" ]; then
-            print_info "Using existing key from current directory: $SCRIPT_DIR/id_ed25519_repo_pideployment"
-            PRIVATE_KEY_FOUND="$SCRIPT_DIR/id_ed25519_repo_pideployment"
+        # Check if key already exists in current working directory
+        if [ -f "$CURRENT_DIR/id_ed25519_repo_pideployment" ]; then
+            print_info "Using existing key from current directory: $CURRENT_DIR/id_ed25519_repo_pideployment"
+            PRIVATE_KEY_FOUND="$CURRENT_DIR/id_ed25519_repo_pideployment"
             USE_EXISTING_KEY=true
         fi
     fi
@@ -682,7 +689,7 @@ if [ ${#MISSING_FILES[@]} -gt 0 ]; then
     CURRENT_REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
     # Ensure KEY_PATH is set (may not be set yet if we're before Step 6)
     if [ -z "$KEY_PATH" ]; then
-        KEY_PATH="$SCRIPT_DIR/id_ed25519_repo_pideployment"
+        KEY_PATH="$CURRENT_DIR/id_ed25519_repo_pideployment"
     fi
     if echo "$CURRENT_REMOTE_URL" | grep -q "^git@" && [ -f "$KEY_PATH" ]; then
         print_info "Using SSH key for git pull..."
@@ -733,7 +740,7 @@ else
     # Generate new SSH key if needed
     SSH_DIR="$HOME/.ssh"
     KEY_NAME="id_ed25519_repo_pideployment"
-    KEY_PATH="$SCRIPT_DIR/$KEY_NAME"
+    KEY_PATH="$CURRENT_DIR/$KEY_NAME"
     KEY_COMMENT="repo-pideployment@raspberrypi"
     
     # Create .ssh directory if needed
@@ -871,7 +878,7 @@ print_info "Pulling latest code from repository..."
 CURRENT_REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
 # Ensure KEY_PATH is set
 if [ -z "$KEY_PATH" ]; then
-    KEY_PATH="$SCRIPT_DIR/id_ed25519_repo_pideployment"
+    KEY_PATH="$CURRENT_DIR/id_ed25519_repo_pideployment"
 fi
 if echo "$CURRENT_REMOTE_URL" | grep -q "^git@" && [ -f "$KEY_PATH" ]; then
     print_info "Using SSH key for git pull..."
@@ -1545,7 +1552,7 @@ else
     if [ -z "$SSH_KEY_ADDED" ] || [ "$SSH_KEY_ADDED" != true ]; then
         echo "2. Add SSH public key to GitHub (if not done already):"
         echo "   https://github.com/$GITHUB_USER/$REPO_NAME/settings/keys"
-        echo "   Public key: $(cat $SCRIPT_DIR/id_ed25519_repo_pideployment.pub 2>/dev/null || echo 'Run setup-ssh-key.sh first')"
+        echo "   Public key: $(cat $CURRENT_DIR/id_ed25519_repo_pideployment.pub 2>/dev/null || echo 'Run setup-ssh-key.sh first')"
         echo ""
     fi
     if [ "$ALL_SYSTEMS_GO" != true ]; then
