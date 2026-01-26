@@ -1,6 +1,22 @@
 # Quick Deployment Reference
 
+## 🚀 Quick Start: Setup Everything from Scratch
+
+**One command to set up everything:**
+```bash
+chmod +x setup-deployment-from-scratch.sh && ./setup-deployment-from-scratch.sh
+```
+
+This will handle all setup automatically. You just need to add the SSH key and webhook to GitHub afterward.
+
+---
+
 ## One-Line Commands
+
+### Complete Setup from Scratch (Recommended)
+```bash
+./setup-deployment-from-scratch.sh
+```
 
 ### Generate SSH Key and Display Public Key
 ```bash
@@ -36,11 +52,13 @@ sudo systemctl start iot-gui-webhook.service
 
 - [ ] Generate SSH key: `./setup-ssh-key.sh`
 - [ ] Copy public key from output
-- [ ] Add deploy key at: `https://github.com/thienanlk/iot_pubsub_gui/settings/keys`
-- [ ] Update git remote: `git remote set-url origin git@github.com:thienanlk/iot_pubsub_gui.git`
-- [ ] Test SSH: `ssh -T git@github.com`
+- [ ] Add deploy key at: `https://github.com/thienanlktl/Pideployment/settings/keys`
+- [ ] Update git remote: 
+  - SSH: `git remote set-url origin git@github.com:thienanlktl/Pideployment.git`
+  - HTTPS: `git remote set-url origin https://github.com/thienanlktl/Pideployment.git`
+- [ ] Test SSH: `ssh -T git@github.com` (if using SSH)
 - [ ] Generate webhook secret: `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`
-- [ ] Add webhook at: `https://github.com/thienanlk/iot_pubsub_gui/settings/hooks`
+- [ ] Add webhook at: `https://github.com/thienanlktl/Pideployment/settings/hooks`
   - URL: `http://YOUR_PI_IP:9000/webhook`
   - Secret: (paste generated secret)
   - Events: Just the push event

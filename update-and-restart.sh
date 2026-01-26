@@ -112,13 +112,28 @@ print_step "Step 1: Pulling Latest Code from GitHub"
 if [ -n "$GIT_REMOTE" ]; then
     print_info "Fetching latest changes from origin/$GIT_BRANCH..."
     
+    # Check if using SSH and set up SSH key if needed
+    if echo "$GIT_REMOTE" | grep -q "^git@"; then
+        SSH_KEY="$HOME/.ssh/id_ed25519_iot_gui"
+        if [ -f "$SSH_KEY" ]; then
+            print_info "Using SSH key for git operations: $SSH_KEY"
+            export GIT_SSH_COMMAND="ssh -i $SSH_KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=no"
+        fi
+    fi
+    
     # Fetch latest changes
     if git fetch origin "$GIT_BRANCH" 2>&1 | tee -a "$LOG_FILE"; then
         print_success "Fetched latest changes"
     else
-        print_error "Failed to fetch from git"
-        log_with_timestamp "ERROR: git fetch failed"
-        exit 1
+        print_warning "Failed to fetch from git, trying without SSH key..."
+        unset GIT_SSH_COMMAND
+        if git fetch origin "$GIT_BRANCH" 2>&1 | tee -a "$LOG_FILE"; then
+            print_success "Fetched latest changes (without SSH key)"
+        else
+            print_error "Failed to fetch from git"
+            log_with_timestamp "ERROR: git fetch failed"
+            exit 1
+        fi
     fi
     
     # Check if we're behind
@@ -130,14 +145,21 @@ if [ -n "$GIT_REMOTE" ]; then
         print_info "Remote commit: $REMOTE_COMMIT"
         print_info "Updates available. Pulling changes..."
         
-        # Pull changes
+        # Pull changes (with SSH key if available)
         if git pull origin "$GIT_BRANCH" 2>&1 | tee -a "$LOG_FILE"; then
             print_success "Pulled latest code successfully"
             CODE_UPDATED=true
         else
-            print_error "Failed to pull from git"
-            log_with_timestamp "ERROR: git pull failed"
-            exit 1
+            print_warning "Failed to pull with current config, trying without SSH key..."
+            unset GIT_SSH_COMMAND
+            if git pull origin "$GIT_BRANCH" 2>&1 | tee -a "$LOG_FILE"; then
+                print_success "Pulled latest code successfully (without SSH key)"
+                CODE_UPDATED=true
+            else
+                print_error "Failed to pull from git"
+                log_with_timestamp "ERROR: git pull failed"
+                exit 1
+            fi
         fi
     else
         print_info "Already up to date with origin/$GIT_BRANCH"
@@ -314,8 +336,26 @@ fi
 # Start the application in background
 print_info "Launching application in background..."
 
+# Ensure we're using Python from venv
+if [ -z "$VIRTUAL_ENV" ] || [ "$VIRTUAL_ENV" != "$VENV_DIR" ]; then
+    source "$VENV_DIR/bin/activate"
+fi
+
+# Use Python from venv (explicit path for reliability)
+VENV_PYTHON="$VENV_DIR/bin/python"
+if [ ! -f "$VENV_PYTHON" ]; then
+    print_error "Python not found in virtual environment: $VENV_PYTHON"
+    log_with_timestamp "ERROR: Python not found in venv"
+    exit 1
+fi
+
+# Create logs directory if needed
+LOG_DIR="$SCRIPT_DIR/logs"
+mkdir -p "$LOG_DIR"
+
 # Use nohup to run in background and redirect output
-nohup python "$APP_FILE" >> "$LOG_FILE" 2>&1 &
+# Use explicit Python path from venv
+nohup "$VENV_PYTHON" "$APP_FILE" >> "$LOG_DIR/app.log" 2>&1 &
 APP_PID=$!
 
 # Save PID to file
@@ -327,10 +367,12 @@ sleep 2
 if kill -0 "$APP_PID" 2>/dev/null; then
     print_success "Application started successfully (PID: $APP_PID)"
     log_with_timestamp "Application started with PID: $APP_PID"
-    print_info "Logs are being written to: $LOG_FILE"
+    print_info "Application logs: $LOG_DIR/app.log"
+    print_info "Update logs: $LOG_FILE"
 else
     print_error "Application failed to start (PID: $APP_PID)"
     log_with_timestamp "ERROR: Application failed to start"
+    print_info "Check application logs: $LOG_DIR/app.log"
     rm -f "$PID_FILE"
     exit 1
 fi
@@ -347,7 +389,8 @@ else
 fi
 
 print_info "Application PID: $APP_PID"
-print_info "Log file: $LOG_FILE"
+print_info "Application logs: $LOG_DIR/app.log"
+print_info "Update logs: $LOG_FILE"
 print_info "PID file: $PID_FILE"
 
 log_with_timestamp "=== Update and Restart Completed Successfully ==="

@@ -11,11 +11,48 @@ The deployment system consists of:
 4. **Systemd Service** - Runs webhook listener as a background service
 5. **Cron Fallback** - Optional periodic check for updates
 
+## Quick Start: Automated Setup from Scratch (Recommended)
+
+**For a completely automated setup, use the master setup script:**
+
+```bash
+cd ~/PublishDemo
+chmod +x setup-deployment-from-scratch.sh
+./setup-deployment-from-scratch.sh
+```
+
+This script will:
+- ✅ Install all system dependencies
+- ✅ Set up virtual environment
+- ✅ Install Python packages (including Flask)
+- ✅ Generate SSH key for GitHub
+- ✅ Configure git repository
+- ✅ Generate webhook secret
+- ✅ Set up systemd service
+- ✅ Configure firewall
+- ✅ Test the setup
+
+**The script will guide you through:**
+1. Adding the SSH public key to GitHub
+2. Configuring the GitHub webhook
+
+**After running the script, you only need to:**
+1. Add the SSH public key to GitHub (script will display it)
+2. Add the webhook to GitHub (script will provide the URL and secret)
+
+Then you're done! The system will automatically update when you push to GitHub.
+
+---
+
+## Manual Setup (Alternative Method)
+
+If you prefer to set up components individually, follow the steps below.
+
 ## Prerequisites
 
 - Raspberry Pi running Raspberry Pi OS
 - Git repository already cloned to `~/PublishDemo` (or your project directory)
-- GitHub repository: `git@github.com:thienanlk/iot_pubsub_gui.git`
+- GitHub repository: `git@github.com:thienanlktl/Pideployment.git` or `https://github.com/thienanlktl/Pideployment.git`
 - Python 3 and virtual environment setup (from `setup-and-run.sh`)
 
 ## Step 1: Generate SSH Key for GitHub
@@ -39,9 +76,8 @@ This will:
 
 2. **Go to your GitHub repository:**
    ```
-   https://github.com/thienanlk/iot_pubsub_gui/settings/keys
+   https://github.com/thienanlktl/Pideployment/settings/keys
    ```
-   (Replace `iot_pubsub_gui` with your actual repository name)
 
 3. **Click "Add deploy key"**
 
@@ -58,13 +94,19 @@ Update your git remote to use SSH:
 
 ```bash
 cd ~/PublishDemo
-git remote set-url origin git@github.com:thienanlk/iot_pubsub_gui.git
+git remote set-url origin git@github.com:thienanlktl/Pideployment.git
 ```
 
 Or if using the SSH config alias:
 
 ```bash
-git remote set-url origin git@github.com-iot-gui:thienanlk/iot_pubsub_gui.git
+git remote set-url origin git@github.com-iot-gui:thienanlktl/Pideployment.git
+```
+
+Or use HTTPS:
+
+```bash
+git remote set-url origin https://github.com/thienanlktl/Pideployment.git
 ```
 
 ### 1.4 Test SSH Connection
@@ -73,7 +115,7 @@ git remote set-url origin git@github.com-iot-gui:thienanlk/iot_pubsub_gui.git
 ssh -T git@github.com
 ```
 
-You should see: `Hi thienanlk! You've successfully authenticated...`
+You should see: `Hi thienanlktl! You've successfully authenticated...`
 
 ## Step 2: Install Webhook Listener Dependencies
 
@@ -150,7 +192,7 @@ Or check your router's admin panel for the Pi's IP address.
 
 1. **Go to your repository settings:**
    ```
-   https://github.com/thienanlk/iot_pubsub_gui/settings/hooks
+   https://github.com/thienanlktl/Pideployment/settings/hooks
    ```
 
 2. **Click "Add webhook"**

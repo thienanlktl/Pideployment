@@ -154,14 +154,22 @@ def run_update_script():
     logger.info(f"Executing update script: {UPDATE_SCRIPT}")
     
     try:
+        # Prepare environment with DISPLAY and PATH
+        env = dict(os.environ)
+        env['DISPLAY'] = os.environ.get('DISPLAY', ':0')
+        # Ensure venv Python is in PATH
+        venv_bin = SCRIPT_DIR / "venv" / "bin"
+        if venv_bin.exists():
+            env['PATH'] = str(venv_bin) + os.pathsep + env.get('PATH', '')
+        
         # Run the update script
         result = subprocess.run(
-            [str(UPDATE_SCRIPT)],
+            ['/bin/bash', str(UPDATE_SCRIPT)],
             cwd=SCRIPT_DIR,
             capture_output=True,
             text=True,
             timeout=600,  # 10 minute timeout
-            env=dict(os.environ, DISPLAY=os.environ.get('DISPLAY', ':0'))
+            env=env
         )
         
         if result.returncode == 0:
