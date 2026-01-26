@@ -71,6 +71,21 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+# Add error handler for 405 Method Not Allowed
+@app.errorhandler(405)
+def method_not_allowed(e):
+    """Handle 405 Method Not Allowed errors"""
+    logger.warning(f"405 Method Not Allowed: {request.method} {request.path}")
+    logger.warning(f"Allowed methods: {e.valid_methods if hasattr(e, 'valid_methods') else 'unknown'}")
+    logger.warning(f"Request headers: {dict(request.headers)}")
+    return jsonify({
+        'error': 'Method Not Allowed',
+        'method': request.method,
+        'path': request.path,
+        'message': f'{request.method} method is not allowed for {request.path}',
+        'allowed_methods': e.valid_methods if hasattr(e, 'valid_methods') else []
+    }), 405
+
 # ============================================================================
 # Helper Functions
 # ============================================================================
@@ -297,13 +312,37 @@ def run_update_script():
 # Webhook Endpoints
 # ============================================================================
 
-@app.route('/webhook', methods=['POST'])
+@app.route('/webhook', methods=['POST', 'OPTIONS'])
+@app.route('/webhook/', methods=['POST', 'OPTIONS'])  # Support trailing slash
 def webhook():
     """
     Main webhook endpoint for GitHub push events
     """
+    # Handle OPTIONS requests (CORS preflight)
+    if request.method == 'OPTIONS':
+        logger.info("OPTIONS request received at /webhook endpoint (CORS preflight)")
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, X-Hub-Signature-256, X-GitHub-Event')
+        return response, 200
+    
+    # Log that webhook was triggered
+    logger.info("=" * 60)
+    logger.info("WEBHOOK TRIGGERED: /webhook endpoint")
+    logger.info(f"Timestamp: {datetime.now().isoformat()}")
+    logger.info(f"Request method: {request.method}")
+    logger.info(f"Request path: {request.path}")
+    logger.info(f"Remote address: {request.remote_addr}")
+    logger.info(f"User-Agent: {request.headers.get('User-Agent', 'N/A')}")
+    logger.info(f"Content-Type: {request.headers.get('Content-Type', 'N/A')}")
+    logger.info(f"X-GitHub-Event: {request.headers.get('X-GitHub-Event', 'N/A')}")
+    logger.info(f"X-GitHub-Delivery: {request.headers.get('X-GitHub-Delivery', 'N/A')}")
+    logger.info("=" * 60)
+    
     # Get raw payload for signature verification
     payload_body = request.get_data()
+    logger.info(f"Payload size: {len(payload_body)} bytes")
     
     # Get signature from header
     signature = request.headers.get('X-Hub-Signature-256', '')
@@ -529,18 +568,40 @@ def trigger():
     }), 202  # 202 Accepted - request accepted for processing
 
 
-@app.route('/', methods=['GET', 'POST'])
+@app.route('/', methods=['GET', 'POST', 'OPTIONS'])
+@app.route('//', methods=['GET', 'POST', 'OPTIONS'])  # Handle double slash (some proxies)
 def index():
     """
     Root endpoint - handles both GET and POST requests
     - GET: triggers update-and-restart.sh when accessed
     - POST: handles GitHub webhook events (when webhook URL is set to root)
+    - OPTIONS: handles CORS preflight requests
     """
+    # Handle OPTIONS requests (CORS preflight)
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, X-Hub-Signature-256, X-GitHub-Event')
+        return response, 200
+    
     # Handle POST requests as webhooks (when GitHub sends to root URL)
     if request.method == 'POST':
-        logger.info("Root endpoint received POST request - treating as webhook")
+        logger.info("=" * 60)
+        logger.info("WEBHOOK TRIGGERED: Root endpoint (/)")
+        logger.info(f"Timestamp: {datetime.now().isoformat()}")
+        logger.info(f"Request method: {request.method}")
+        logger.info(f"Request path: {request.path}")
+        logger.info(f"Remote address: {request.remote_addr}")
+        logger.info(f"User-Agent: {request.headers.get('User-Agent', 'N/A')}")
+        logger.info(f"Content-Type: {request.headers.get('Content-Type', 'N/A')}")
+        logger.info(f"X-GitHub-Event: {request.headers.get('X-GitHub-Event', 'N/A')}")
+        logger.info(f"X-GitHub-Delivery: {request.headers.get('X-GitHub-Delivery', 'N/A')}")
+        logger.info("=" * 60)
+        
         # Get raw payload for signature verification
         payload_body = request.get_data()
+        logger.info(f"Payload size: {len(payload_body)} bytes")
         
         # Get signature from header
         signature = request.headers.get('X-Hub-Signature-256', '')
@@ -689,6 +750,27 @@ def index():
         'timestamp': datetime.now().isoformat(),
         'note': 'The update is running in the background. Check logs for completion status.'
     }), 202  # 202 Accepted - request accepted for processing
+
+
+@app.errorhandler(404)
+def not_found(e):
+    """Handle 404 Not Found errors with detailed logging"""
+    logger.warning(f"404 Not Found: {request.method} {request.path}")
+    logger.warning(f"Request headers: {dict(request.headers)}")
+    logger.warning(f"Available routes: /webhook (POST), / (GET/POST), /health (GET), /trigger (GET/POST), /logs (GET)")
+    return jsonify({
+        'error': 'Not Found',
+        'method': request.method,
+        'path': request.path,
+        'message': f'Route {request.path} not found',
+        'available_routes': {
+            '/webhook': 'POST - GitHub webhook endpoint',
+            '/': 'GET/POST - Root endpoint (handles webhooks and manual triggers)',
+            '/health': 'GET - Health check',
+            '/trigger': 'GET/POST - Manual trigger',
+            '/logs': 'GET - View logs'
+        }
+    }), 404
 
 
 # ============================================================================
