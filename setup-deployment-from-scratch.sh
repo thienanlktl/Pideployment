@@ -149,7 +149,7 @@ WEBHOOK_PORT="${WEBHOOK_PORT:-9000}"
 HARDCODED_NGROK_URL="https://tardy-vernita-howlingly.ngrok-free.dev"
 
 # Hardcoded GitHub Personal Access Token
-HARDCODED_GITHUB_TOKEN="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"
+HARDCODED_GITHUB_TOKEN="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"
 
 # Determine project directory
 # If we're in a git repo, use current directory, otherwise we'll clone

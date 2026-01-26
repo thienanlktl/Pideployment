@@ -71,7 +71,7 @@ NGROK_URL_FILE="$PROJECT_DIR/.ngrok_url"
 HARDCODED_NGROK_URL="https://tardy-vernita-howlingly.ngrok-free.dev"
 
 # Hardcoded GitHub Personal Access Token
-HARDCODED_GITHUB_TOKEN="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"
+HARDCODED_GITHUB_TOKEN="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"
 
 echo ""
 print_step "Automatically Create GitHub Webhook"
