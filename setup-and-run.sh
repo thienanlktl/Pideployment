@@ -386,9 +386,49 @@ else
 fi
 
 # ============================================================================
-# Step 7: Run the application
+# Step 7: Pull latest code from git (if in a git repository)
 # ============================================================================
-print_step "Step 7: Starting Application"
+print_step "Step 7: Pulling Latest Code from Git"
+
+if [ -d ".git" ]; then
+    GIT_BRANCH="${GIT_BRANCH:-main}"
+    
+    # Check git remote configuration
+    GIT_REMOTE=$(git remote get-url origin 2>/dev/null || echo "")
+    if [ -n "$GIT_REMOTE" ]; then
+        print_info "Git remote: $GIT_REMOTE"
+        
+        # Ensure we're on the correct branch
+        CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
+        if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "$GIT_BRANCH" ]; then
+            print_info "Switching to $GIT_BRANCH branch..."
+            if git checkout "$GIT_BRANCH" 2>/dev/null; then
+                print_success "Switched to $GIT_BRANCH branch"
+            else
+                print_warning "Could not switch to $GIT_BRANCH, continuing with current branch..."
+            fi
+        else
+            print_info "Already on $GIT_BRANCH branch"
+        fi
+        
+        # Pull latest code
+        print_info "Pulling latest code from origin/$GIT_BRANCH..."
+        if git pull origin "$GIT_BRANCH" 2>/dev/null; then
+            print_success "Successfully pulled latest code from git"
+        else
+            print_warning "Failed to pull latest code from git, continuing with current code..."
+        fi
+    else
+        print_warning "No git remote found, skipping git pull"
+    fi
+else
+    print_info "Not a git repository, skipping git pull"
+fi
+
+# ============================================================================
+# Step 8: Run the application
+# ============================================================================
+print_step "Step 8: Starting Application"
 echo ""
 
 # Check if DISPLAY is set (for GUI)

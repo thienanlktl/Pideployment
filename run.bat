@@ -46,6 +46,39 @@ if errorlevel 1 (
 
 echo All dependencies are installed.
 echo.
+
+REM Pull latest code from git if in a git repository
+if exist ".git" (
+    echo Pulling latest code from git...
+    set GIT_BRANCH=main
+    
+    REM Check git remote configuration
+    git remote get-url origin >nul 2>&1
+    if %errorlevel% equ 0 (
+        echo Git remote found
+        
+        REM Ensure we're on the correct branch
+        for /f "tokens=*" %%b in ('git branch --show-current 2^>nul') do set CURRENT_BRANCH=%%b
+        if not "%CURRENT_BRANCH%"=="%GIT_BRANCH%" (
+            echo Switching to %GIT_BRANCH% branch...
+            git checkout %GIT_BRANCH% >nul 2>&1
+        )
+        
+        REM Pull latest code
+        git pull origin %GIT_BRANCH% >nul 2>&1
+        if %errorlevel% equ 0 (
+            echo Successfully pulled latest code from git
+        ) else (
+            echo Warning: Failed to pull latest code from git, continuing with current code...
+        )
+    ) else (
+        echo Warning: No git remote found, skipping git pull
+    )
+) else (
+    echo Not a git repository, skipping git pull
+)
+
+echo.
 echo Starting application...
 echo.
 
