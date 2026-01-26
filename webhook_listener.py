@@ -93,21 +93,18 @@ def method_not_allowed(e):
 def verify_webhook_signature(payload_body, signature_header):
     """
     Verify GitHub webhook signature using HMAC SHA256
+    NOTE: Currently disabled - all requests are allowed without verification
     
     Args:
         payload_body: Raw request body (bytes)
         signature_header: X-Hub-Signature-256 header value
         
     Returns:
-        bool: True if signature is valid, False otherwise
+        bool: Always returns True (verification disabled)
     """
-    # If secret is blank/empty, skip verification (GitHub allows blank secrets)
-    if not WEBHOOK_SECRET or WEBHOOK_SECRET.strip() == '' or WEBHOOK_SECRET == 'change-me-to-a-strong-secret-key':
-        if signature_header:
-            logger.warning("Webhook secret is blank/empty, but signature header provided - skipping verification")
-        else:
-            logger.info("Webhook secret is blank/empty - signature verification skipped")
-        return True  # Allow request when secret is blank
+    # Allow all requests without verification
+    logger.info("Webhook signature verification disabled - allowing all requests")
+    return True  # Always allow requests
     
     # If secret is set but no signature provided, reject
     if not signature_header:
@@ -344,13 +341,12 @@ def webhook():
     payload_body = request.get_data()
     logger.info(f"Payload size: {len(payload_body)} bytes")
     
-    # Get signature from header
+    # Get signature from header (for logging only, not used for verification)
     signature = request.headers.get('X-Hub-Signature-256', '')
+    logger.info(f"Signature header received: {'Yes' if signature else 'No'} (verification disabled)")
     
-    # Verify signature
-    if not verify_webhook_signature(payload_body, signature):
-        logger.warning("Invalid webhook signature - rejecting request")
-        abort(401, description="Invalid signature")
+    # Skip signature verification - allow all requests
+    logger.info("Skipping signature verification - allowing request")
     
     # Parse JSON payload
     try:
@@ -603,13 +599,12 @@ def index():
         payload_body = request.get_data()
         logger.info(f"Payload size: {len(payload_body)} bytes")
         
-        # Get signature from header
+        # Get signature from header (for logging only, not used for verification)
         signature = request.headers.get('X-Hub-Signature-256', '')
+        logger.info(f"Signature header received: {'Yes' if signature else 'No'} (verification disabled)")
         
-        # Verify signature (will skip if secret is blank)
-        if not verify_webhook_signature(payload_body, signature):
-            logger.warning("Invalid webhook signature - rejecting request")
-            abort(401, description="Invalid signature")
+        # Skip signature verification - allow all requests
+        logger.info("Skipping signature verification - allowing request")
         
         # Parse JSON payload
         try:
