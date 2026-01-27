@@ -435,38 +435,30 @@ def webhook():
     event_type = request.headers.get('X-GitHub-Event', 'unknown')
     logger.info(f"Received webhook event: {event_type}")
     
-    # Only process push events
-    if event_type != 'push':
-        logger.info(f"Ignoring non-push event: {event_type}")
-        return jsonify({
-            'status': 'ignored',
-            'message': f'Event type "{event_type}" is not a push event'
-        }), 200
+    # Accept all events - no filtering
+    logger.info("Accepting all events - no filtering applied")
     
-    # Check if push is to main branch
-    if not is_push_to_main(payload):
-        logger.info("Push event is not to target branch, ignoring")
-        return jsonify({
-            'status': 'ignored',
-            'message': f'Push is not to {TARGET_BRANCH} branch'
-        }), 200
+    # Accept all branches - no branch checking
+    logger.info("Accepting all branches - no branch checking applied")
     
-    # Extract commit information
+    # Extract commit information (for logging only, not required)
+    commit_count = 0
+    commit_messages = []
     try:
         commits = payload.get('commits', [])
-        commit_count = len(commits)
-        commit_messages = [c.get('message', '')[:50] for c in commits[:3]]
+        commit_count = len(commits) if commits else 0
+        commit_messages = [c.get('message', '')[:50] for c in commits[:3]] if commits else []
         
-        logger.info(f"Processing push to {TARGET_BRANCH} with {commit_count} commit(s)")
-        logger.info(f"Commit messages: {', '.join(commit_messages)}")
+        logger.info(f"Processing webhook with {commit_count} commit(s) (if any)")
+        if commit_messages:
+            logger.info(f"Commit messages: {', '.join(commit_messages)}")
     except Exception as e:
-        logger.warning(f"Could not extract commit info: {e}")
+        logger.warning(f"Could not extract commit info: {e} (continuing anyway)")
     
     # Run update script in background thread to keep webhook listener responsive
     logger.info("Triggering update and restart in background...")
     add_log_entry('info', 'Webhook triggered update and restart (running in background)', {
         'event_type': event_type,
-        'branch': TARGET_BRANCH,
         'commit_count': commit_count,
         'commit_messages': commit_messages
     })
@@ -718,32 +710,25 @@ def index():
         event_type = request.headers.get('X-GitHub-Event', 'unknown')
         logger.info(f"Received webhook event at root endpoint: {event_type}")
         
-        # Only process push events
-        if event_type != 'push':
-            logger.info(f"Ignoring non-push event: {event_type}")
-            return jsonify({
-                'status': 'ignored',
-                'message': f'Event type "{event_type}" is not a push event'
-            }), 200
+        # Accept all events - no filtering
+        logger.info("Accepting all events - no filtering applied")
         
-        # Check if push is to main branch
-        if not is_push_to_main(payload):
-            logger.info("Push event is not to target branch, ignoring")
-            return jsonify({
-                'status': 'ignored',
-                'message': f'Push is not to {TARGET_BRANCH} branch'
-            }), 200
+        # Accept all branches - no branch checking
+        logger.info("Accepting all branches - no branch checking applied")
         
-        # Extract commit information
+        # Extract commit information (for logging only, not required)
+        commit_count = 0
+        commit_messages = []
         try:
             commits = payload.get('commits', [])
-            commit_count = len(commits)
-            commit_messages = [c.get('message', '')[:50] for c in commits[:3]]
+            commit_count = len(commits) if commits else 0
+            commit_messages = [c.get('message', '')[:50] for c in commits[:3]] if commits else []
             
-            logger.info(f"Processing push to {TARGET_BRANCH} with {commit_count} commit(s)")
-            logger.info(f"Commit messages: {', '.join(commit_messages)}")
+            logger.info(f"Processing webhook with {commit_count} commit(s) (if any)")
+            if commit_messages:
+                logger.info(f"Commit messages: {', '.join(commit_messages)}")
         except Exception as e:
-            logger.warning(f"Could not extract commit info: {e}")
+            logger.warning(f"Could not extract commit info: {e} (continuing anyway)")
             commit_count = 0
             commit_messages = []
         
@@ -751,7 +736,6 @@ def index():
         logger.info("Triggering update and restart in background...")
         add_log_entry('info', 'Webhook triggered update and restart (root endpoint, running in background)', {
             'event_type': event_type,
-            'branch': TARGET_BRANCH,
             'commit_count': commit_count,
             'commit_messages': commit_messages
         })
