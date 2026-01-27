@@ -514,11 +514,291 @@ else
 fi
 
 # ============================================================================
-# Step 7: Restart the application
+# Step 7: Pre-startup Environment and System Checks
 # ============================================================================
-print_step "Step 5: Restarting Application"
+print_step "Step 5: Pre-Startup System Checks"
 
-# Check if application file exists
+# Function to check and fix permissions
+check_and_fix_permissions() {
+    print_info "Checking file and directory permissions..."
+    
+    # Check script directory permissions
+    if [ ! -r "$SCRIPT_DIR" ] || [ ! -w "$SCRIPT_DIR" ] || [ ! -x "$SCRIPT_DIR" ]; then
+        print_warning "Script directory has permission issues: $SCRIPT_DIR"
+        log_with_timestamp "WARNING: Script directory permission issues"
+    fi
+    
+    # Check application file permissions
+    if [ -f "$APP_FILE" ]; then
+        if [ ! -r "$APP_FILE" ]; then
+            print_warning "Application file is not readable, attempting to fix..."
+            chmod +r "$APP_FILE" 2>/dev/null || {
+                print_error "Failed to fix application file read permissions"
+                log_with_timestamp "ERROR: Cannot fix application file permissions"
+            }
+        fi
+    fi
+    
+    # Check venv permissions
+    if [ -d "$VENV_DIR" ]; then
+        if [ ! -r "$VENV_DIR" ] || [ ! -x "$VENV_DIR" ]; then
+            print_warning "Venv directory has permission issues, attempting to fix..."
+            chmod -R u+rX "$VENV_DIR" 2>/dev/null || {
+                print_warning "Could not fix all venv permissions (may need sudo)"
+                log_with_timestamp "WARNING: Venv permission issues may persist"
+            }
+        fi
+    fi
+    
+    # Check log directory permissions
+    LOG_DIR="$SCRIPT_DIR/logs"
+    if [ ! -d "$LOG_DIR" ]; then
+        mkdir -p "$LOG_DIR" 2>/dev/null || {
+            print_error "Failed to create log directory: $LOG_DIR"
+            log_with_timestamp "ERROR: Cannot create log directory"
+            return 1
+        }
+    fi
+    
+    if [ ! -w "$LOG_DIR" ]; then
+        print_warning "Log directory is not writable, attempting to fix..."
+        chmod u+w "$LOG_DIR" 2>/dev/null || {
+            print_error "Failed to fix log directory write permissions"
+            log_with_timestamp "ERROR: Cannot write to log directory"
+            return 1
+        }
+    fi
+    
+    # Check PID file location permissions
+    PID_DIR=$(dirname "$PID_FILE")
+    if [ "$PID_DIR" != "." ] && [ ! -w "$PID_DIR" ]; then
+        print_warning "PID file directory is not writable, attempting to fix..."
+        chmod u+w "$PID_DIR" 2>/dev/null || {
+            print_warning "Could not fix PID directory permissions"
+        }
+    fi
+    
+    print_success "Permission checks completed"
+    log_with_timestamp "PERMISSIONS: Permission checks completed"
+    return 0
+}
+
+# Function to check system resources
+check_system_resources() {
+    print_info "Checking system resources..."
+    
+    # Check disk space (need at least 100MB free)
+    if command -v df >/dev/null 2>&1; then
+        AVAILABLE_SPACE=$(df "$SCRIPT_DIR" | tail -1 | awk '{print $4}' 2>/dev/null || echo "0")
+        if [ -n "$AVAILABLE_SPACE" ] && [ "$AVAILABLE_SPACE" -lt 102400 ]; then
+            print_warning "Low disk space: ${AVAILABLE_SPACE}KB available (recommended: >100MB)"
+            log_with_timestamp "WARNING: Low disk space: ${AVAILABLE_SPACE}KB"
+        else
+            print_info "Disk space OK: ${AVAILABLE_SPACE}KB available"
+            log_with_timestamp "RESOURCES: Disk space: ${AVAILABLE_SPACE}KB"
+        fi
+    fi
+    
+    # Check memory (if available)
+    if command -v free >/dev/null 2>&1; then
+        MEM_INFO=$(free -m 2>/dev/null | grep Mem || echo "")
+        if [ -n "$MEM_INFO" ]; then
+            MEM_AVAILABLE=$(echo "$MEM_INFO" | awk '{print $7}')
+            if [ -n "$MEM_AVAILABLE" ] && [ "$MEM_AVAILABLE" -lt 100 ]; then
+                print_warning "Low available memory: ${MEM_AVAILABLE}MB (recommended: >100MB)"
+                log_with_timestamp "WARNING: Low memory: ${MEM_AVAILABLE}MB"
+            else
+                print_info "Memory OK: ${MEM_AVAILABLE}MB available"
+                log_with_timestamp "RESOURCES: Memory: ${MEM_AVAILABLE}MB"
+            fi
+        fi
+    fi
+    
+    return 0
+}
+
+# Function to validate environment
+validate_environment() {
+    print_info "Validating environment..."
+    
+    # Check critical environment variables
+    MISSING_ENV=0
+    
+    # Check if we can determine user
+    if [ -z "$USER" ] && [ -z "$SUDO_USER" ]; then
+        USER=$(whoami 2>/dev/null || echo "unknown")
+        export USER
+        print_info "Set USER=$USER"
+    fi
+    
+    # Check if we can determine home directory
+    if [ -z "$HOME" ]; then
+        HOME=$(eval echo ~$USER 2>/dev/null || echo "/tmp")
+        export HOME
+        print_info "Set HOME=$HOME"
+    fi
+    
+    # Verify home directory exists and is accessible
+    if [ ! -d "$HOME" ] || [ ! -r "$HOME" ]; then
+        print_warning "Home directory issue: $HOME"
+        log_with_timestamp "WARNING: Home directory may not be accessible"
+        MISSING_ENV=$((MISSING_ENV + 1))
+    fi
+    
+    # Check DISPLAY for GUI
+    if [ -z "$DISPLAY" ]; then
+        # Try to detect and set DISPLAY
+        if [ -n "$XDG_SESSION_ID" ] || [ -n "$WAYLAND_DISPLAY" ]; then
+            export DISPLAY=:0 2>/dev/null || true
+            print_info "Set DISPLAY=:0 for GUI"
+        elif [ -S "/tmp/.X11-unix/X0" ] 2>/dev/null; then
+            export DISPLAY=:0
+            print_info "Detected X server, set DISPLAY=:0"
+        else
+            print_warning "DISPLAY not set - GUI may not work"
+            log_with_timestamp "WARNING: DISPLAY not set"
+        fi
+    fi
+    
+    # Check PATH
+    if [ -z "$PATH" ]; then
+        export PATH="/usr/local/bin:/usr/bin:/bin"
+        print_warning "PATH was empty, set default PATH"
+        log_with_timestamp "WARNING: PATH was empty"
+    fi
+    
+    # Verify Python is in PATH or use venv Python
+    if ! command -v python3 >/dev/null 2>&1 && ! command -v python >/dev/null 2>&1; then
+        if [ -f "$VENV_DIR/bin/python" ]; then
+            print_info "System Python not found, will use venv Python"
+        else
+            print_error "No Python found in PATH or venv"
+            log_with_timestamp "ERROR: No Python available"
+            return 1
+        fi
+    fi
+    
+    if [ "$MISSING_ENV" -eq 0 ]; then
+        print_success "Environment validation passed"
+        log_with_timestamp "ENV: Environment validation passed"
+    else
+        print_warning "Environment validation completed with $MISSING_ENV warning(s)"
+        log_with_timestamp "ENV: Environment validation completed with warnings"
+    fi
+    
+    return 0
+}
+
+# Function to check network connectivity (for AWS IoT)
+check_network_connectivity() {
+    print_info "Checking network connectivity..."
+    
+    # Check if we can resolve DNS
+    if command -v nslookup >/dev/null 2>&1 || command -v host >/dev/null 2>&1; then
+        if command -v nslookup >/dev/null 2>&1; then
+            if nslookup -timeout=2 google.com >/dev/null 2>&1; then
+                print_info "Network connectivity OK (DNS working)"
+                log_with_timestamp "NETWORK: DNS connectivity OK"
+                return 0
+            fi
+        elif command -v host >/dev/null 2>&1; then
+            if host -W 2 google.com >/dev/null 2>&1; then
+                print_info "Network connectivity OK (DNS working)"
+                log_with_timestamp "NETWORK: DNS connectivity OK"
+                return 0
+            fi
+        fi
+    fi
+    
+    # Try ping as fallback
+    if command -v ping >/dev/null 2>&1; then
+        if ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
+            print_info "Network connectivity OK (ping working)"
+            log_with_timestamp "NETWORK: Ping connectivity OK"
+            return 0
+        fi
+    fi
+    
+    print_warning "Network connectivity check failed (may still work for local resources)"
+    log_with_timestamp "WARNING: Network connectivity check failed"
+    return 0  # Don't fail on network check
+}
+
+# Function to verify file system integrity
+check_filesystem() {
+    print_info "Checking file system integrity..."
+    
+    # Check if script directory is accessible
+    if [ ! -d "$SCRIPT_DIR" ]; then
+        print_error "Script directory does not exist: $SCRIPT_DIR"
+        log_with_timestamp "ERROR: Script directory missing"
+        return 1
+    fi
+    
+    # Check if we can write to script directory
+    if [ ! -w "$SCRIPT_DIR" ]; then
+        print_error "Cannot write to script directory: $SCRIPT_DIR"
+        log_with_timestamp "ERROR: Script directory not writable"
+        return 1
+    fi
+    
+    # Check if application file exists and is readable
+    if [ ! -f "$APP_FILE" ]; then
+        print_error "Application file not found: $APP_FILE"
+        log_with_timestamp "ERROR: Application file not found"
+        return 1
+    fi
+    
+    if [ ! -r "$APP_FILE" ]; then
+        print_error "Application file is not readable: $APP_FILE"
+        log_with_timestamp "ERROR: Application file not readable"
+        return 1
+    fi
+    
+    print_success "File system checks passed"
+    log_with_timestamp "FILESYSTEM: File system checks passed"
+    return 0
+}
+
+# Run all pre-startup checks
+print_info "Running comprehensive pre-startup checks..."
+
+# Check file system first (critical)
+if ! check_filesystem; then
+    print_error "File system checks failed - cannot proceed"
+    log_with_timestamp "ERROR: File system checks failed"
+    exit 1
+fi
+
+# Check and fix permissions
+if ! check_and_fix_permissions; then
+    print_error "Permission checks failed - cannot proceed"
+    log_with_timestamp "ERROR: Permission checks failed"
+    exit 1
+fi
+
+# Validate environment
+if ! validate_environment; then
+    print_error "Environment validation failed - cannot proceed"
+    log_with_timestamp "ERROR: Environment validation failed"
+    exit 1
+fi
+
+# Check system resources (warnings only)
+check_system_resources
+
+# Check network (warnings only)
+check_network_connectivity
+
+print_success "All pre-startup checks completed"
+log_with_timestamp "PRE-STARTUP: All checks completed"
+
+# ============================================================================
+# Step 8: Restart the application
+# ============================================================================
+print_step "Step 6: Restarting Application"
+
+# Check if application file exists (redundant but safe)
 if [ ! -f "$APP_FILE" ]; then
     print_error "Application file not found: $APP_FILE"
     log_with_timestamp "ERROR: Application file not found"
@@ -737,6 +1017,154 @@ check_app_logs() {
     fi
 }
 
+# Function to attempt recovery if app fails
+attempt_recovery() {
+    local failed_pid=$1
+    print_info "Attempting recovery procedures..."
+    log_with_timestamp "RECOVERY: Starting recovery procedures"
+    
+    # Check for common issues and try to fix them
+    
+    # 1. Check if it's a permission issue
+    if [ -f "$LOG_DIR/app.log" ]; then
+        if grep -qi "permission.*denied\|cannot.*open.*file\|access.*denied" "$LOG_DIR/app.log" 2>/dev/null; then
+            print_warning "Permission errors detected - attempting to fix..."
+            log_with_timestamp "RECOVERY: Permission errors detected"
+            
+            # Try to fix permissions
+            if [ -f "$APP_FILE" ]; then
+                chmod +r "$APP_FILE" 2>/dev/null || true
+            fi
+            if [ -d "$VENV_DIR" ]; then
+                chmod -R u+rX "$VENV_DIR/bin" 2>/dev/null || true
+            fi
+            if [ -d "$LOG_DIR" ]; then
+                chmod u+w "$LOG_DIR" 2>/dev/null || true
+            fi
+            
+            print_info "Permissions adjusted - may need manual intervention"
+            log_with_timestamp "RECOVERY: Permissions adjusted"
+        fi
+    fi
+    
+    # 2. Check if it's an environment issue
+    if [ -f "$LOG_DIR/app.log" ]; then
+        if grep -qi "cannot.*connect.*to.*x.*server\|no.*display\|qt.*platform" "$LOG_DIR/app.log" 2>/dev/null; then
+            print_warning "Display/GUI errors detected"
+            log_with_timestamp "RECOVERY: Display/GUI errors detected"
+            print_info "Try setting DISPLAY manually: export DISPLAY=:0"
+        fi
+    fi
+    
+    # 3. Check if it's a venv issue
+    if [ -f "$LOG_DIR/app.log" ]; then
+        if grep -qi "no.*module.*named\|cannot.*import" "$LOG_DIR/app.log" 2>/dev/null; then
+            print_warning "Missing packages detected - may need to reinstall dependencies"
+            log_with_timestamp "RECOVERY: Missing packages detected"
+            print_info "Try running: source venv/bin/activate && pip install -r requirements.txt"
+        fi
+    fi
+    
+    # 4. Check if it's a resource issue
+    if command -v df >/dev/null 2>&1; then
+        AVAILABLE_SPACE=$(df "$SCRIPT_DIR" | tail -1 | awk '{print $4}' 2>/dev/null || echo "0")
+        if [ -n "$AVAILABLE_SPACE" ] && [ "$AVAILABLE_SPACE" -lt 51200 ]; then
+            print_error "Critical: Very low disk space: ${AVAILABLE_SPACE}KB"
+            log_with_timestamp "RECOVERY: Critical low disk space"
+            print_info "Free up disk space and try again"
+        fi
+    fi
+    
+    # 5. Log recovery summary
+    log_with_timestamp "RECOVERY: Recovery procedures completed"
+    print_info "Recovery procedures completed - check logs for details"
+    
+    # Provide helpful error summary
+    echo ""
+    print_error "Application failed to start. Common solutions:"
+    echo "  1. Check application logs: $LOG_DIR/app.log"
+    echo "  2. Verify permissions: chmod +r $APP_FILE"
+    echo "  3. Verify venv: source venv/bin/activate && pip install -r requirements.txt"
+    echo "  4. Check DISPLAY: export DISPLAY=:0"
+    echo "  5. Check disk space: df -h"
+    echo "  6. Try manual run: ./run-application-manual.sh"
+    echo ""
+}
+
+# Function to attempt recovery if app fails
+attempt_recovery() {
+    local failed_pid=$1
+    print_info "Attempting recovery procedures..."
+    log_with_timestamp "RECOVERY: Starting recovery procedures"
+    
+    # Check for common issues and try to fix them
+    
+    # 1. Check if it's a permission issue
+    if [ -f "$LOG_DIR/app.log" ]; then
+        if grep -qi "permission.*denied\|cannot.*open.*file\|access.*denied" "$LOG_DIR/app.log" 2>/dev/null; then
+            print_warning "Permission errors detected - attempting to fix..."
+            log_with_timestamp "RECOVERY: Permission errors detected"
+            
+            # Try to fix permissions
+            if [ -f "$APP_FILE" ]; then
+                chmod +r "$APP_FILE" 2>/dev/null || true
+            fi
+            if [ -d "$VENV_DIR" ]; then
+                chmod -R u+rX "$VENV_DIR/bin" 2>/dev/null || true
+            fi
+            if [ -d "$LOG_DIR" ]; then
+                chmod u+w "$LOG_DIR" 2>/dev/null || true
+            fi
+            
+            print_info "Permissions adjusted - may need manual intervention"
+            log_with_timestamp "RECOVERY: Permissions adjusted"
+        fi
+    fi
+    
+    # 2. Check if it's an environment issue
+    if [ -f "$LOG_DIR/app.log" ]; then
+        if grep -qi "cannot.*connect.*to.*x.*server\|no.*display\|qt.*platform" "$LOG_DIR/app.log" 2>/dev/null; then
+            print_warning "Display/GUI errors detected"
+            log_with_timestamp "RECOVERY: Display/GUI errors detected"
+            print_info "Try setting DISPLAY manually: export DISPLAY=:0"
+        fi
+    fi
+    
+    # 3. Check if it's a venv issue
+    if [ -f "$LOG_DIR/app.log" ]; then
+        if grep -qi "no.*module.*named\|cannot.*import" "$LOG_DIR/app.log" 2>/dev/null; then
+            print_warning "Missing packages detected - may need to reinstall dependencies"
+            log_with_timestamp "RECOVERY: Missing packages detected"
+            print_info "Try running: source venv/bin/activate && pip install -r requirements.txt"
+        fi
+    fi
+    
+    # 4. Check if it's a resource issue
+    if command -v df >/dev/null 2>&1; then
+        AVAILABLE_SPACE=$(df "$SCRIPT_DIR" | tail -1 | awk '{print $4}' 2>/dev/null || echo "0")
+        if [ -n "$AVAILABLE_SPACE" ] && [ "$AVAILABLE_SPACE" -lt 51200 ]; then
+            print_error "Critical: Very low disk space: ${AVAILABLE_SPACE}KB"
+            log_with_timestamp "RECOVERY: Critical low disk space"
+            print_info "Free up disk space and try again"
+        fi
+    fi
+    
+    # 5. Log recovery summary
+    log_with_timestamp "RECOVERY: Recovery procedures completed"
+    print_info "Recovery procedures completed - check logs for details"
+    
+    # Provide helpful error summary
+    echo ""
+    print_error "Application failed to start. Common solutions:"
+    echo "  1. Check application logs: $LOG_DIR/app.log"
+    echo "  2. Verify permissions: chmod +r $APP_FILE"
+    echo "  3. Verify venv: source venv/bin/activate && pip install -r requirements.txt"
+    echo "  4. Check DISPLAY: export DISPLAY=:0"
+    echo "  5. Check disk space: df -h"
+    echo "  6. Try manual run: ./run-application-manual.sh"
+    echo ""
+}
+
 # Function to check for critical startup errors
 check_startup_errors() {
     if [ ! -f "$LOG_DIR/app.log" ]; then
@@ -894,6 +1322,7 @@ if check_app_status "$APP_PID" "initial"; then
             print_error "Application crashed after extended stability check"
             log_with_timestamp "ERROR: Application crashed after extended stability check"
             check_app_logs
+            attempt_recovery "$APP_PID"
             rm -f "$PID_FILE"
             exit 1
         fi
@@ -901,6 +1330,7 @@ if check_app_status "$APP_PID" "initial"; then
         print_error "Application failed stability check - crashed during monitoring"
         log_with_timestamp "ERROR: Application failed stability check"
         check_app_logs
+        attempt_recovery "$APP_PID"
         rm -f "$PID_FILE"
         exit 1
     fi
@@ -913,6 +1343,33 @@ else
     log_with_timestamp "ERROR: Application failed to start (PID: $APP_PID not found)"
     print_info "Check application logs: $LOG_DIR/app.log"
     check_app_logs
+    
+    # Attempt recovery
+    attempt_recovery "$APP_PID"
+    
+    # Provide detailed diagnostics
+    echo ""
+    print_error "=== Startup Failure Diagnostics ==="
+    echo "Application PID: $APP_PID"
+    echo "Application file: $APP_FILE"
+    echo "Application file exists: $([ -f "$APP_FILE" ] && echo "Yes" || echo "No")"
+    echo "Application file readable: $([ -r "$APP_FILE" ] && echo "Yes" || echo "No")"
+    echo "Venv Python: $VENV_PYTHON"
+    echo "Venv Python exists: $([ -f "$VENV_PYTHON" ] && echo "Yes" || echo "No")"
+    echo "Venv Python executable: $([ -x "$VENV_PYTHON" ] && echo "Yes" || echo "No")"
+    echo "Working directory: $(pwd)"
+    echo "DISPLAY: ${DISPLAY:-not set}"
+    echo "USER: ${USER:-not set}"
+    echo "HOME: ${HOME:-not set}"
+    echo "PATH: $PATH"
+    echo ""
+    
+    if [ -f "$LOG_DIR/app.log" ]; then
+        echo "Last 20 lines of app.log:"
+        tail -20 "$LOG_DIR/app.log" 2>/dev/null || echo "Could not read app.log"
+        echo ""
+    fi
+    
     rm -f "$PID_FILE"
     exit 1
 fi
