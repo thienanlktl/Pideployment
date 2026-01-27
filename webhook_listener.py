@@ -38,10 +38,16 @@ WEBHOOK_PORT = int(os.environ.get('WEBHOOK_PORT', '9000'))
 WEBHOOK_HOST = os.environ.get('WEBHOOK_HOST', '0.0.0.0')  # Listen on all interfaces
 
 # Project directory (where this script is located)
-SCRIPT_DIR = Path(__file__).parent.absolute()
+# Use absolute path to ensure we always reference files in the same directory
+SCRIPT_DIR = Path(__file__).resolve().parent
 UPDATE_SCRIPT = SCRIPT_DIR / "update-and-restart.sh"
 LOG_FILE = SCRIPT_DIR / "webhook.log"
 UPDATE_LOG_FILE = SCRIPT_DIR / "update.log"
+APP_FILE = SCRIPT_DIR / "iot_pubsub_gui.py"
+REQUIREMENTS_FILE = SCRIPT_DIR / "requirements.txt"
+PID_FILE = SCRIPT_DIR / "app.pid"
+VENV_DIR = SCRIPT_DIR / "venv"
+WRAPPER_SCRIPT = SCRIPT_DIR / ".run_app_wrapper.sh"
 
 # Target branch to monitor
 TARGET_BRANCH = os.environ.get('GIT_BRANCH', 'main')
@@ -284,23 +290,61 @@ def run_update_script():
     })
     
     try:
+        # Verify we're in the correct directory
+        if not SCRIPT_DIR.exists():
+            error_msg = f"Script directory does not exist: {SCRIPT_DIR}"
+            logger.error(error_msg)
+            return False, "", error_msg
+        
+        # Change to script directory to ensure all relative paths work
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(SCRIPT_DIR)
+            logger.info(f"Changed working directory to: {SCRIPT_DIR}")
+        except Exception as e:
+            logger.warning(f"Could not change to script directory: {e}")
+            logger.warning("Continuing with current directory, but paths may be incorrect")
+        
         # Prepare environment with DISPLAY and PATH
         env = dict(os.environ)
         env['DISPLAY'] = os.environ.get('DISPLAY', ':0')
         # Ensure venv Python is in PATH
-        venv_bin = SCRIPT_DIR / "venv" / "bin"
+        venv_bin = VENV_DIR / "bin"
         if venv_bin.exists():
             env['PATH'] = str(venv_bin) + os.pathsep + env.get('PATH', '')
         
+        # Set SCRIPT_DIR in environment so update script knows where it is
+        env['SCRIPT_DIR'] = str(SCRIPT_DIR)
+        
+        # Log all file paths being used
+        logger.info(f"Working directory: {os.getcwd()}")
+        logger.info(f"Update script: {UPDATE_SCRIPT}")
+        logger.info(f"Update script exists: {UPDATE_SCRIPT.exists()}")
+        logger.info(f"App file: {APP_FILE}")
+        logger.info(f"App file exists: {APP_FILE.exists()}")
+        logger.info(f"Venv directory: {VENV_DIR}")
+        logger.info(f"Venv exists: {VENV_DIR.exists()}")
+        
+        # Run the update script - use absolute path to be sure
+        update_script_abs = str(UPDATE_SCRIPT.resolve())
+        logger.info(f"Executing: /bin/bash {update_script_abs}")
+        logger.info(f"From directory: {os.getcwd()}")
+        
         # Run the update script
         result = subprocess.run(
-            ['/bin/bash', str(UPDATE_SCRIPT)],
-            cwd=SCRIPT_DIR,
+            ['/bin/bash', update_script_abs],
+            cwd=str(SCRIPT_DIR),  # Explicitly set working directory
             capture_output=True,
             text=True,
             timeout=600,  # 10 minute timeout
             env=env
         )
+        
+        # Restore original working directory
+        try:
+            os.chdir(original_cwd)
+        except Exception:
+            pass  # Ignore errors restoring directory
         
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
@@ -861,11 +905,43 @@ def main():
     """
     Main entry point for the webhook listener
     """
-    # Check if update script exists
-    if not UPDATE_SCRIPT.exists():
-        logger.error(f"Update script not found: {UPDATE_SCRIPT}")
-        logger.error("Please ensure update-and-restart.sh exists in the project directory")
+    # Verify all required files are in the same directory
+    logger.info("Verifying required files in script directory...")
+    logger.info(f"Script directory: {SCRIPT_DIR}")
+    
+    required_files = {
+        'Update script': UPDATE_SCRIPT,
+        'App file': APP_FILE,
+    }
+    
+    missing_files = []
+    for name, file_path in required_files.items():
+        if file_path.exists():
+            logger.info(f"  ✓ {name}: {file_path}")
+        else:
+            logger.error(f"  ✗ {name}: {file_path} (NOT FOUND)")
+            missing_files.append(name)
+    
+    if missing_files:
+        logger.error(f"Missing required files: {', '.join(missing_files)}")
+        logger.error(f"Please ensure all files exist in: {SCRIPT_DIR}")
         sys.exit(1)
+    
+    # Log optional files
+    optional_files = {
+        'Requirements file': REQUIREMENTS_FILE,
+        'Venv directory': VENV_DIR,
+        'PID file': PID_FILE,
+        'Wrapper script': WRAPPER_SCRIPT,
+    }
+    
+    for name, file_path in optional_files.items():
+        if file_path.exists():
+            logger.info(f"  ✓ {name}: {file_path}")
+        else:
+            logger.debug(f"  - {name}: {file_path} (not found, will be created if needed)")
+    
+    logger.info("All required files found in script directory")
     
     # Warn if using default secret
     if WEBHOOK_SECRET == 'change-me-to-a-strong-secret-key':

@@ -579,17 +579,100 @@ if [ ! -f "$VENV_PYTHON" ]; then
     exit 1
 fi
 
+# Verify venv Python is working
+print_info "Verifying virtual environment Python..."
+if ! "$VENV_PYTHON" --version >/dev/null 2>&1; then
+    print_error "Virtual environment Python is not working"
+    log_with_timestamp "ERROR: venv Python failed version check"
+    exit 1
+fi
+
+# Verify critical packages are available in venv
+print_info "Verifying required packages in virtual environment..."
+if ! "$VENV_PYTHON" -c "import PyQt6; import awsiot" 2>/dev/null; then
+    print_warning "Some required packages may be missing in venv"
+    log_with_timestamp "WARNING: Package verification failed - may cause issues"
+    # Try to show what's missing
+    "$VENV_PYTHON" -c "import PyQt6" 2>&1 | head -1 >> "$LOG_FILE" || true
+    "$VENV_PYTHON" -c "import awsiot" 2>&1 | head -1 >> "$LOG_FILE" || true
+else
+    print_success "Required packages verified in virtual environment"
+    log_with_timestamp "START: Required packages verified"
+fi
+
 # Create logs directory if needed
 LOG_DIR="$SCRIPT_DIR/logs"
 mkdir -p "$LOG_DIR"
 
+# Create a wrapper script to ensure venv is properly activated
+WRAPPER_SCRIPT="$SCRIPT_DIR/.run_app_wrapper.sh"
+cat > "$WRAPPER_SCRIPT" << WRAPPER_EOF
+#!/bin/bash
+# Wrapper script to run application with proper venv activation
+SCRIPT_DIR_WRAPPER="$(cd "$(dirname "\$0")" && pwd)"
+VENV_DIR_WRAPPER="\$SCRIPT_DIR_WRAPPER/venv"
+APP_FILE_WRAPPER="\$SCRIPT_DIR_WRAPPER/iot_pubsub_gui.py"
+
+# Preserve important environment variables from parent
+if [ -n "\$DISPLAY" ]; then
+    export DISPLAY="\$DISPLAY"
+fi
+if [ -n "\$HOME" ]; then
+    export HOME="\$HOME"
+fi
+if [ -n "\$USER" ]; then
+    export USER="\$USER"
+fi
+if [ -n "\$XDG_RUNTIME_DIR" ]; then
+    export XDG_RUNTIME_DIR="\$XDG_RUNTIME_DIR"
+fi
+if [ -n "\$XDG_SESSION_ID" ]; then
+    export XDG_SESSION_ID="\$XDG_SESSION_ID"
+fi
+
+# Activate virtual environment
+source "\$VENV_DIR_WRAPPER/bin/activate" || {
+    echo "ERROR: Failed to activate virtual environment" >&2
+    exit 1
+}
+
+# Verify Python is from venv
+if ! command -v python >/dev/null 2>&1; then
+    echo "ERROR: Python not found in PATH after venv activation" >&2
+    exit 1
+fi
+
+# Verify we're using venv Python
+PYTHON_PATH=\$(which python)
+if [[ "\$PYTHON_PATH" != "\$VENV_DIR_WRAPPER"* ]]; then
+    echo "ERROR: Not using venv Python. Got: \$PYTHON_PATH" >&2
+    exit 1
+fi
+
+# Verify critical packages are available
+if ! python -c "import PyQt6; import awsiot" 2>/dev/null; then
+    echo "ERROR: Required packages (PyQt6, awsiot) not found in venv" >&2
+    python -c "import PyQt6" 2>&1 | head -1 >&2
+    python -c "import awsiot" 2>&1 | head -1 >&2
+    exit 1
+fi
+
+# Run the application
+cd "\$SCRIPT_DIR_WRAPPER"
+exec python "\$APP_FILE_WRAPPER"
+WRAPPER_EOF
+
+chmod +x "$WRAPPER_SCRIPT"
+log_with_timestamp "START: Created wrapper script: $WRAPPER_SCRIPT"
+
 # Use nohup to run in background and redirect output
-# Use explicit Python path from venv
-log_with_timestamp "START: Launching application with: $VENV_PYTHON $APP_FILE"
+# Use wrapper script to ensure venv is properly activated
+log_with_timestamp "START: Launching application with wrapper script"
 log_with_timestamp "START: Output will be logged to: $LOG_DIR/app.log"
 log_with_timestamp "START: DISPLAY=$DISPLAY"
-log_with_timestamp "START: VIRTUAL_ENV=$VIRTUAL_ENV"
-log_with_timestamp "START: PATH=$PATH"
+log_with_timestamp "START: VIRTUAL_ENV=$VENV_DIR"
+log_with_timestamp "START: VENV_PYTHON=$VENV_PYTHON"
+log_with_timestamp "START: Wrapper script: $WRAPPER_SCRIPT"
 
 # Clear any old log entries to start fresh
 if [ -f "$LOG_DIR/app.log" ]; then
@@ -599,8 +682,14 @@ fi
 
 # Start the application with proper environment
 # Use setsid to detach from terminal and prevent SIGHUP
-log_with_timestamp "START: Starting application with setsid and nohup"
-setsid nohup "$VENV_PYTHON" "$APP_FILE" >> "$LOG_DIR/app.log" 2>&1 &
+# Use wrapper script to ensure venv is properly activated
+# Pass DISPLAY explicitly to the wrapper
+log_with_timestamp "START: Starting application with setsid and nohup via wrapper script"
+if [ -n "$DISPLAY" ]; then
+    DISPLAY="$DISPLAY" setsid nohup "$WRAPPER_SCRIPT" >> "$LOG_DIR/app.log" 2>&1 &
+else
+    setsid nohup "$WRAPPER_SCRIPT" >> "$LOG_DIR/app.log" 2>&1 &
+fi
 APP_PID=$!
 
 log_with_timestamp "START: Application launched, PID: $APP_PID"
@@ -632,45 +721,146 @@ check_app_status() {
 # Function to check app.log for errors
 check_app_logs() {
     if [ -f "$LOG_DIR/app.log" ]; then
-        local error_count=$(grep -i "error\|exception\|traceback\|fatal" "$LOG_DIR/app.log" 2>/dev/null | wc -l || echo "0")
+        local error_count=$(grep -i "error\|exception\|traceback\|fatal\|import.*error\|module.*not.*found\|cannot.*import" "$LOG_DIR/app.log" 2>/dev/null | wc -l || echo "0")
         if [ "$error_count" -gt 0 ]; then
             log_with_timestamp "WARNING: Found $error_count potential errors in app.log"
             log_with_timestamp "ERROR: Last 30 lines of app.log with errors:"
-            grep -i "error\|exception\|traceback\|fatal" "$LOG_DIR/app.log" 2>/dev/null | tail -10 >> "$LOG_FILE" || true
+            grep -i "error\|exception\|traceback\|fatal\|import.*error\|module.*not.*found\|cannot.*import" "$LOG_DIR/app.log" 2>/dev/null | tail -10 >> "$LOG_FILE" || true
+            return 1  # Return error status
         fi
         log_with_timestamp "STATUS: Last 5 lines of app.log:"
         tail -5 "$LOG_DIR/app.log" >> "$LOG_FILE" 2>/dev/null || true
+        return 0  # No errors found
+    else
+        log_with_timestamp "WARNING: app.log file not found yet"
+        return 0  # File doesn't exist yet, not an error
     fi
+}
+
+# Function to check for critical startup errors
+check_startup_errors() {
+    if [ ! -f "$LOG_DIR/app.log" ]; then
+        return 0  # Log file doesn't exist yet
+    fi
+    
+    # Check for critical errors that indicate the app won't start
+    local critical_errors=0
+    
+    # Check for import errors
+    if grep -qi "import.*error\|module.*not.*found\|cannot.*import\|no.*module.*named" "$LOG_DIR/app.log" 2>/dev/null; then
+        log_with_timestamp "ERROR: Import/module errors detected in app.log"
+        critical_errors=$((critical_errors + 1))
+    fi
+    
+    # Check for syntax errors
+    if grep -qi "syntax.*error\|indentation.*error" "$LOG_DIR/app.log" 2>/dev/null; then
+        log_with_timestamp "ERROR: Syntax errors detected in app.log"
+        critical_errors=$((critical_errors + 1))
+    fi
+    
+    # Check for display/GUI errors
+    if grep -qi "cannot.*connect.*to.*x.*server\|no.*display\|qt.*platform.*plugin" "$LOG_DIR/app.log" 2>/dev/null; then
+        log_with_timestamp "ERROR: Display/GUI errors detected in app.log"
+        critical_errors=$((critical_errors + 1))
+    fi
+    
+    # Check for file not found errors (certificates, etc.)
+    if grep -qi "file.*not.*found\|no.*such.*file\|certificate.*not.*found" "$LOG_DIR/app.log" 2>/dev/null; then
+        log_with_timestamp "ERROR: File not found errors detected in app.log"
+        critical_errors=$((critical_errors + 1))
+    fi
+    
+    # Check for virtual environment errors
+    if grep -qi "failed.*to.*activate.*virtual.*environment\|not.*using.*venv.*python\|python.*not.*found.*in.*path\|required.*packages.*not.*found.*in.*venv" "$LOG_DIR/app.log" 2>/dev/null; then
+        log_with_timestamp "ERROR: Virtual environment errors detected in app.log"
+        critical_errors=$((critical_errors + 1))
+    fi
+    
+    # Check for module/package errors that might indicate venv issues
+    if grep -qi "no.*module.*named.*PyQt6\|no.*module.*named.*awsiot\|cannot.*import.*PyQt6\|cannot.*import.*awsiot" "$LOG_DIR/app.log" 2>/dev/null; then
+        log_with_timestamp "ERROR: Missing required packages (PyQt6/awsiot) - venv may not be properly activated"
+        critical_errors=$((critical_errors + 1))
+    fi
+    
+    if [ "$critical_errors" -gt 0 ]; then
+        log_with_timestamp "ERROR: Found $critical_errors critical startup error(s)"
+        return 1
+    fi
+    
+    return 0
 }
 
 # Wait and verify process started successfully
 log_with_timestamp "START: Waiting 3 seconds to verify process started"
 sleep 3
 
+# Check for immediate errors in logs (before checking process status)
+if [ -f "$LOG_DIR/app.log" ]; then
+    log_with_timestamp "START: Checking for immediate startup errors in logs"
+    if ! check_startup_errors; then
+        print_error "Critical startup errors detected in application logs"
+        log_with_timestamp "ERROR: Critical startup errors found - application may not start properly"
+        check_app_logs
+        # Still check if process is running, but log the errors
+    fi
+fi
+
 if check_app_status "$APP_PID" "initial"; then
     print_success "Application started successfully (PID: $APP_PID)"
     log_with_timestamp "START: Application started successfully (PID: $APP_PID)"
     log_process_info "Application (newly started)" "$APP_PID"
-    check_app_logs
     
-    # Extended monitoring - check multiple times over 10 seconds
-    log_with_timestamp "START: Starting extended monitoring (checking every 2 seconds for 10 seconds)"
+    # Check logs for errors
+    if ! check_app_logs; then
+        print_warning "Errors detected in application logs, but process is running"
+        log_with_timestamp "WARNING: Errors in logs but process still running - monitoring closely"
+    fi
+    
+    # Check for critical errors again after a moment
+    sleep 2
+    if ! check_startup_errors; then
+        print_error "Critical errors detected - application may crash soon"
+        log_with_timestamp "ERROR: Critical errors detected after initial start"
+        check_app_logs
+        # Continue monitoring but mark as potentially unstable
+    fi
+    
+    # Extended monitoring - check multiple times over 30 seconds (increased from 10)
+    log_with_timestamp "START: Starting extended monitoring (checking every 3 seconds for 30 seconds)"
     MONITORING_PASSED=true
-    for i in 1 2 3 4 5; do
-        sleep 2
+    ERROR_DETECTED=false
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        sleep 3
         if ! check_app_status "$APP_PID" "monitor-$i"; then
-            print_error "Application crashed during monitoring (check $i/5)"
-            log_with_timestamp "ERROR: Application crashed during monitoring at check $i/5"
+            print_error "Application crashed during monitoring (check $i/10)"
+            log_with_timestamp "ERROR: Application crashed during monitoring at check $i/10"
             MONITORING_PASSED=false
             check_app_logs
             break
         fi
-        log_with_timestamp "STATUS: Application still running after $((i * 2)) seconds"
+        
+        # Check for errors in logs during monitoring
+        if ! check_startup_errors; then
+            if [ "$ERROR_DETECTED" = false ]; then
+                print_warning "Errors detected in logs during monitoring (check $i/10)"
+                log_with_timestamp "WARNING: Errors detected during monitoring at check $i/10"
+                ERROR_DETECTED=true
+                check_app_logs
+            fi
+        fi
+        
+        log_with_timestamp "STATUS: Application still running after $((i * 3)) seconds"
     done
     
     if [ "$MONITORING_PASSED" = true ]; then
-        print_success "Verified: Application is running stably (survived 10+ seconds)"
+        print_success "Verified: Application is running stably (survived 30+ seconds)"
         log_with_timestamp "START: Verified - Application is running stably"
+        
+        # Final error check before declaring success
+        if ! check_startup_errors; then
+            print_warning "Errors detected in logs, but application is still running"
+            log_with_timestamp "WARNING: Errors in logs but process stable - may need attention"
+        fi
         
         # Check if we can see the process command to verify it's using the correct file
         if command -v ps >/dev/null 2>&1; then
@@ -688,15 +878,21 @@ if check_app_status "$APP_PID" "initial"; then
         # Log file information again to confirm we're using the latest
         log_file_info "$APP_FILE"
         
-        # Final check after another 5 seconds
-        log_with_timestamp "START: Final stability check (waiting 5 more seconds)"
-        sleep 5
+        # Final stability check after another 10 seconds (increased from 5)
+        log_with_timestamp "START: Final stability check (waiting 10 more seconds)"
+        sleep 10
         if check_app_status "$APP_PID" "final"; then
-            print_success "Application is running stably (survived 15+ seconds)"
-            log_with_timestamp "START: Application passed final stability check"
+            # One more error check
+            if check_startup_errors; then
+                print_success "Application is running stably (survived 40+ seconds, no critical errors)"
+                log_with_timestamp "START: Application passed final stability check - no critical errors"
+            else
+                print_warning "Application is running but errors detected in logs"
+                log_with_timestamp "WARNING: Application running but errors in logs - may need investigation"
+            fi
         else
-            print_error "Application crashed after initial stability check"
-            log_with_timestamp "ERROR: Application crashed after initial stability check"
+            print_error "Application crashed after extended stability check"
+            log_with_timestamp "ERROR: Application crashed after extended stability check"
             check_app_logs
             rm -f "$PID_FILE"
             exit 1
