@@ -16,13 +16,15 @@ import sys
 import json
 import traceback
 import os
+import sqlite3
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QTextEdit, QPushButton, QGroupBox, QMessageBox
+    QLabel, QLineEdit, QTextEdit, QPushButton, QGroupBox, QMessageBox,
+    QDialog, QTableWidget, QTableWidgetItem, QHeaderView
 )
 from PyQt6.QtCore import Qt, QObject, pyqtSignal, QMetaObject, Q_ARG
 from PyQt6.QtGui import QTextCursor, QColor
@@ -61,6 +63,10 @@ class AWSIoTPubSubGUI(QMainWindow):
         # Message receiver for thread-safe updates
         self.message_receiver = MessageReceiver()
         self.message_receiver.message_received.connect(self.on_message_received)
+        
+        # SQLite Database
+        self.db_path = str(script_dir / "iot_messages.db")
+        self.init_database()
         
         self.init_ui()
         self.update_status("Disconnected", False)
@@ -166,6 +172,16 @@ class AWSIoTPubSubGUI(QMainWindow):
         # Log Area
         log_group = QGroupBox("Message Log")
         log_layout = QVBoxLayout()
+        
+        # Log buttons layout
+        log_btn_layout = QHBoxLayout()
+        self.view_logs_btn = QPushButton("View All Messages in Database")
+        self.view_logs_btn.clicked.connect(self.show_all_messages)
+        self.view_logs_btn.setStyleSheet("font-size: 10pt; padding: 5px;")
+        log_btn_layout.addWidget(self.view_logs_btn)
+        log_btn_layout.addStretch()
+        log_layout.addLayout(log_btn_layout)
+        
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setMinimumHeight(250)
@@ -537,9 +553,61 @@ class AWSIoTPubSubGUI(QMainWindow):
             self.add_log(f"ERROR: {error_msg}")
             QMessageBox.critical(self, "Unsubscribe Error", error_msg)
     
+    def init_database(self):
+        """Initialize SQLite database and create table if it doesn't exist"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Create messages table if it doesn't exist
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    topic TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Create index on timestamp for faster queries
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp)
+            ''')
+            
+            # Create index on topic for faster queries
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_topic ON messages(topic)
+            ''')
+            
+            conn.commit()
+            conn.close()
+            self.add_log(f"SQLite database initialized: {self.db_path}")
+        except Exception as e:
+            self.add_log(f"Error initializing database: {e}")
+    
+    def insert_message_to_db(self, timestamp: str, topic: str, payload: str):
+        """Insert received message into SQLite database"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                INSERT INTO messages (timestamp, topic, payload)
+                VALUES (?, ?, ?)
+            ''', (timestamp, topic, payload))
+            
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            self.add_log(f"Error inserting message to database: {e}")
+    
     def on_message_received(self, timestamp: str, topic: str, payload: str):
         """Handle received message (called from signal, thread-safe)"""
         try:
+            # Insert message into SQLite database
+            self.insert_message_to_db(timestamp, topic, payload)
+            
             # Try to format JSON if possible
             try:
                 payload_dict = json.loads(payload)
@@ -553,6 +621,71 @@ class AWSIoTPubSubGUI(QMainWindow):
             
         except Exception as e:
             self.add_log(f"Error processing received message: {e}")
+    
+    def show_all_messages(self):
+        """Show all messages from SQLite database in a dialog"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Get all messages ordered by timestamp (newest first)
+            cursor.execute('''
+                SELECT id, timestamp, topic, payload, created_at
+                FROM messages
+                ORDER BY timestamp DESC
+            ''')
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            # Create dialog window
+            dialog = QDialog(self)
+            dialog.setWindowTitle("All Messages in Database")
+            dialog.setGeometry(100, 100, 1000, 600)
+            
+            layout = QVBoxLayout(dialog)
+            
+            # Add label with count
+            count_label = QLabel(f"Total messages: {len(rows)}")
+            count_label.setStyleSheet("font-size: 11pt; font-weight: bold; padding: 5px;")
+            layout.addWidget(count_label)
+            
+            # Create table
+            table = QTableWidget()
+            table.setColumnCount(5)
+            table.setHorizontalHeaderLabels(["ID", "Timestamp", "Topic", "Payload", "Created At"])
+            
+            # Set table properties
+            table.setRowCount(len(rows))
+            table.setAlternatingRowColors(True)
+            table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+            table.horizontalHeader().setStretchLastSection(True)
+            table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+            table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+            
+            # Populate table
+            for row_idx, row_data in enumerate(rows):
+                for col_idx, value in enumerate(row_data):
+                    item = QTableWidgetItem(str(value))
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # Make read-only
+                    table.setItem(row_idx, col_idx, item)
+            
+            # Resize columns to content
+            table.resizeColumnsToContents()
+            
+            layout.addWidget(table)
+            
+            # Add close button
+            close_btn = QPushButton("Close")
+            close_btn.clicked.connect(dialog.close)
+            layout.addWidget(close_btn)
+            
+            dialog.exec()
+            
+        except Exception as e:
+            error_msg = f"Error retrieving messages from database: {e}"
+            self.add_log(error_msg)
+            QMessageBox.critical(self, "Database Error", error_msg)
     
     def closeEvent(self, event):
         """Handle window close event"""
