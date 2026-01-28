@@ -66,9 +66,9 @@ class AWSIoTPubSubGUI(QMainWindow):
         
         # SQLite Database
         self.db_path = str(script_dir / "iot_messages.db")
-        self.init_database()
         
         self.init_ui()
+        self.init_database()  # Initialize database after UI so log_text exists
         self.update_status("Disconnected", False)
     
     def init_ui(self):
@@ -212,6 +212,9 @@ class AWSIoTPubSubGUI(QMainWindow):
     
     def add_log(self, message: str):
         """Add a message to the log area with timestamp"""
+        # Check if log_text exists (may not be initialized yet)
+        if not hasattr(self, 'log_text') or self.log_text is None:
+            return
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_entry = f"[{timestamp}] {message}\n"
         self.log_text.moveCursor(QTextCursor.MoveOperation.End)
