@@ -644,7 +644,7 @@ class AWSIoTPubSubGUI(QMainWindow):
             # Create dialog window
             dialog = QDialog(self)
             dialog.setWindowTitle("All Messages in Database")
-            dialog.setGeometry(100, 100, 1000, 600)
+            dialog.setGeometry(100, 100, 1400, 700)  # Larger dialog to show more content
             
             layout = QVBoxLayout(dialog)
             
@@ -662,19 +662,52 @@ class AWSIoTPubSubGUI(QMainWindow):
             table.setRowCount(len(rows))
             table.setAlternatingRowColors(True)
             table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-            table.horizontalHeader().setStretchLastSection(True)
-            table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-            table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+            table.setWordWrap(True)  # Enable word wrapping
+            table.horizontalHeader().setStretchLastSection(False)
+            
+            # Set column resize modes
+            table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # ID
+            table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)  # Timestamp
+            table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # Topic
+            table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)  # Payload - stretch to fill
+            table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # Created At
+            
+            # Set minimum widths for better visibility
+            table.setColumnWidth(0, 60)   # ID
+            table.setColumnWidth(1, 180)  # Timestamp
+            table.setColumnWidth(2, 250)  # Topic
+            table.setColumnWidth(3, 600)  # Payload - minimum width
+            table.setColumnWidth(4, 180)  # Created At
             
             # Populate table
             for row_idx, row_data in enumerate(rows):
                 for col_idx, value in enumerate(row_data):
-                    item = QTableWidgetItem(str(value))
+                    # Format payload if it's JSON
+                    if col_idx == 3 and value:  # Payload column
+                        try:
+                            # Try to parse and format JSON
+                            payload_dict = json.loads(str(value))
+                            formatted_value = json.dumps(payload_dict, indent=2)
+                        except:
+                            # Not JSON, use as is
+                            formatted_value = str(value)
+                    else:
+                        formatted_value = str(value)
+                    
+                    item = QTableWidgetItem(formatted_value)
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # Make read-only
+                    
+                    # Enable text wrapping for payload column
+                    if col_idx == 3:  # Payload column
+                        item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+                    
                     table.setItem(row_idx, col_idx, item)
+                
+                # Set row height to accommodate wrapped text
+                table.setRowHeight(row_idx, 100)  # Initial height, will auto-adjust
             
-            # Resize columns to content
-            table.resizeColumnsToContents()
+            # Adjust row heights based on content
+            table.resizeRowsToContents()
             
             layout.addWidget(table)
             
