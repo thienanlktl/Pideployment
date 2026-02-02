@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QTextEdit, QPushButton, QGroupBox, QMessageBox,
     QDialog, QTableWidget, QTableWidgetItem, QHeaderView
 )
-from PyQt6.QtCore import Qt, QObject, pyqtSignal, QMetaObject, Q_ARG, QThread
+from PyQt6.QtCore import Qt, QObject, pyqtSignal, QMetaObject, Q_ARG, QThread, QTimer
 from PyQt6.QtGui import QTextCursor, QColor
 
 from awscrt import mqtt
@@ -121,7 +121,8 @@ class AWSIoTPubSubGUI(QMainWindow):
         self.update_status("Disconnected", False)
         
         # Start update check in background after UI is ready
-        QMetaObject.invokeMethod(self, "start_update_check", Qt.ConnectionType.QueuedConnection)
+        # Use QTimer to call it after the event loop starts
+        QTimer.singleShot(1000, self.start_update_check)  # Wait 1 second for UI to be fully ready
     
     def init_ui(self):
         """Initialize the user interface"""
