@@ -5,6 +5,16 @@
 # This is a self-contained installer that packages all application files
 # Usage: bash install-iot-pubsub-gui-standalone.sh
 #
+# IMPORTANT: This script must be run with bash, not sh
+# ============================================================================
+
+# Ensure script is run with bash
+if [ -z "$BASH_VERSION" ]; then
+    echo "Error: This script must be run with bash, not sh"
+    echo "Please run: bash install-iot-pubsub-gui-standalone.sh"
+    exit 1
+fi
+#
 # What it does:
 # - Updates system packages
 # - Installs required system dependencies
@@ -52,9 +62,16 @@ print_step() {
     echo -e "${GREEN}========================================${NC}"
 }
 
-# Check if running on Linux
-if [[ "$OSTYPE" != "linux-gnu"* ]]; then
+# Check if running on Linux (more flexible check for Raspberry Pi OS)
+if [[ "$OSTYPE" != "linux-gnu"* ]] && [[ "$OSTYPE" != "linux"* ]] && [[ "$(uname -s)" != "Linux" ]]; then
     print_error "This script is designed for Linux/Raspberry Pi OS"
+    print_error "Detected OS: $OSTYPE"
+    exit 1
+fi
+
+# Check if bash is available
+if ! command -v bash &> /dev/null; then
+    print_error "bash is required but not found. Please install bash first."
     exit 1
 fi
 
@@ -117,7 +134,9 @@ SYSTEM_PACKAGES=(
 
 MISSING_PACKAGES=()
 for package in "${SYSTEM_PACKAGES[@]}"; do
-    if ! dpkg -l | grep -q "^ii  $package "; then
+    # Check if package is installed (more robust check)
+    if ! dpkg -l 2>/dev/null | grep -q "^ii[[:space:]]*$package[[:space:]]" && \
+       ! dpkg -l 2>/dev/null | grep -q "^ii[[:space:]]*$package:"; then
         MISSING_PACKAGES+=("$package")
     fi
 done
@@ -1276,7 +1295,13 @@ fi
 
 # Activate virtual environment
 print_info "Activating virtual environment..."
-source "$VENV_DIR/bin/activate"
+# Use absolute path to ensure it works
+if [ -f "$VENV_DIR/bin/activate" ]; then
+    source "$VENV_DIR/bin/activate"
+else
+    print_error "Virtual environment activation script not found"
+    exit 1
+fi
 
 # Upgrade pip
 print_info "Upgrading pip..."
@@ -1348,13 +1373,22 @@ EOF
 chmod +x "$DESKTOP_FILE"
 
 # Make desktop file trusted (required for some desktop environments)
+# Try multiple methods for different desktop environments
 if command -v gio &> /dev/null; then
     gio set "$DESKTOP_FILE" metadata::trusted true 2>/dev/null || true
 fi
 
+# Alternative method for making desktop file executable and trusted
+chmod +x "$DESKTOP_FILE" 2>/dev/null || true
+
 # Refresh desktop (if possible)
 if command -v update-desktop-database &> /dev/null; then
     update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+fi
+
+# For Raspberry Pi OS with LXDE/PiX desktop
+if [ -d "$HOME/.local/share/applications" ]; then
+    cp "$DESKTOP_FILE" "$HOME/.local/share/applications/" 2>/dev/null || true
 fi
 
 print_success "Desktop launcher created: $DESKTOP_FILE"
