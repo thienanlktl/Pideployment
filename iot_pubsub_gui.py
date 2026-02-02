@@ -17,6 +17,9 @@ import json
 import traceback
 import os
 import sqlite3
+import subprocess
+import logging
+import threading
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -26,16 +29,54 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QTextEdit, QPushButton, QGroupBox, QMessageBox,
     QDialog, QTableWidget, QTableWidgetItem, QHeaderView
 )
-from PyQt6.QtCore import Qt, QObject, pyqtSignal, QMetaObject, Q_ARG
+from PyQt6.QtCore import Qt, QObject, pyqtSignal, QMetaObject, Q_ARG, QThread
 from PyQt6.QtGui import QTextCursor, QColor
 
 from awscrt import mqtt
 from awsiot import mqtt_connection_builder
 
+# Try to import requests for update check
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
+
+# Version information
+__version__ = "1.0.0"
+VERSION_FILE = Path(__file__).parent / "VERSION"
+
+# Try to read version from VERSION file if it exists
+if VERSION_FILE.exists():
+    try:
+        with open(VERSION_FILE, 'r') as f:
+            version_from_file = f.read().strip()
+            if version_from_file:
+                __version__ = version_from_file
+    except Exception:
+        pass
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(Path(__file__).parent / "iot_pubsub_gui.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
 
 class MessageReceiver(QObject):
     """Signal emitter for thread-safe GUI updates from MQTT callbacks"""
     message_received = pyqtSignal(str, str, str)  # timestamp, topic, payload
+
+
+class UpdateChecker(QObject):
+    """Signal emitter for update check results"""
+    update_available = pyqtSignal(str, str)  # latest_sha, local_sha
+    check_complete = pyqtSignal(bool)  # success
 
 
 class AWSIoTPubSubGUI(QMainWindow):
@@ -67,9 +108,20 @@ class AWSIoTPubSubGUI(QMainWindow):
         # SQLite Database
         self.db_path = str(script_dir / "iot_messages.db")
         
+        # Update check
+        self.update_checker = UpdateChecker()
+        self.update_checker.update_available.connect(self.on_update_available)
+        self.update_checker.check_complete.connect(self.on_update_check_complete)
+        self.latest_remote_sha = None
+        self.local_sha = None
+        self.script_dir = script_dir
+        
         self.init_ui()
         self.init_database()  # Initialize database after UI so log_text exists
         self.update_status("Disconnected", False)
+        
+        # Start update check in background after UI is ready
+        QMetaObject.invokeMethod(self, "start_update_check", Qt.ConnectionType.QueuedConnection)
     
     def init_ui(self):
         """Initialize the user interface"""
@@ -83,9 +135,35 @@ class AWSIoTPubSubGUI(QMainWindow):
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(15, 15, 15, 15)
         
-        # Status of update label (red)
-        self.update_status_label = QLabel("Status of update")
-        self.update_status_label.setStyleSheet("font-size: 12pt; font-weight: bold; padding: 5px; color: red;")
+        # Top bar with version and update status
+        top_bar_layout = QHBoxLayout()
+        
+        # Version label (left side)
+        self.version_label = QLabel(f"Version: {__version__}")
+        self.version_label.setStyleSheet("font-size: 10pt; color: gray; padding: 5px;")
+        top_bar_layout.addWidget(self.version_label)
+        
+        top_bar_layout.addStretch()
+        
+        # Update notification (right side, initially hidden)
+        self.update_notification_layout = QHBoxLayout()
+        self.update_notification_label = QLabel("New update available!")
+        self.update_notification_label.setStyleSheet("font-size: 10pt; color: orange; padding: 5px;")
+        self.update_notification_label.setVisible(False)
+        self.update_notification_layout.addWidget(self.update_notification_label)
+        
+        self.update_now_btn = QPushButton("Update Now")
+        self.update_now_btn.setStyleSheet("font-size: 10pt; padding: 5px; background-color: #4CAF50; color: white;")
+        self.update_now_btn.clicked.connect(self.perform_update)
+        self.update_now_btn.setVisible(False)
+        self.update_notification_layout.addWidget(self.update_now_btn)
+        
+        top_bar_layout.addLayout(self.update_notification_layout)
+        main_layout.addLayout(top_bar_layout)
+        
+        # Status of update label (red) - keep for backward compatibility, but hide it
+        self.update_status_label = QLabel("")
+        self.update_status_label.setVisible(False)
         main_layout.addWidget(self.update_status_label)
         
         # Status label
@@ -722,6 +800,197 @@ class AWSIoTPubSubGUI(QMainWindow):
             error_msg = f"Error retrieving messages from database: {e}"
             self.add_log(error_msg)
             QMessageBox.critical(self, "Database Error", error_msg)
+    
+    def start_update_check(self):
+        """Start update check in background thread"""
+        def check_update():
+            """Check for updates in background thread"""
+            try:
+                logger.info("Starting update check...")
+                
+                # Get local git commit SHA
+                local_sha = None
+                try:
+                    result = subprocess.run(
+                        ['git', 'rev-parse', 'HEAD'],
+                        cwd=self.script_dir,
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0:
+                        local_sha = result.stdout.strip()
+                        logger.info(f"Local commit SHA: {local_sha[:8]}")
+                    else:
+                        logger.warning("Could not get local commit SHA (not a git repo or git not available)")
+                except Exception as e:
+                    logger.warning(f"Error getting local commit SHA: {e}")
+                
+                # Get remote commit SHA from GitHub API
+                remote_sha = None
+                if REQUESTS_AVAILABLE:
+                    try:
+                        api_url = "https://api.github.com/repos/thienanlktl/Pideployment/commits/main"
+                        response = requests.get(api_url, timeout=10)
+                        if response.status_code == 200:
+                            data = response.json()
+                            remote_sha = data.get('sha', '').strip()
+                            logger.info(f"Remote commit SHA: {remote_sha[:8]}")
+                        else:
+                            logger.warning(f"GitHub API returned status {response.status_code}")
+                    except Exception as e:
+                        logger.warning(f"Error checking remote commit: {e}")
+                else:
+                    logger.warning("requests library not available, cannot check for updates")
+                
+                # Compare and emit signal
+                if local_sha and remote_sha:
+                    if local_sha != remote_sha:
+                        logger.info("Update available!")
+                        self.update_checker.update_available.emit(remote_sha, local_sha)
+                    else:
+                        logger.info("Application is up to date")
+                
+                self.update_checker.check_complete.emit(True)
+            except Exception as e:
+                logger.error(f"Error in update check: {e}")
+                self.update_checker.check_complete.emit(False)
+        
+        # Run in background thread
+        thread = threading.Thread(target=check_update, daemon=True)
+        thread.start()
+    
+    def on_update_available(self, remote_sha: str, local_sha: str):
+        """Handle update available signal"""
+        self.latest_remote_sha = remote_sha
+        self.local_sha = local_sha
+        logger.info(f"Update available: {remote_sha[:8]} (current: {local_sha[:8]})")
+        
+        # Show update notification
+        self.update_notification_label.setVisible(True)
+        self.update_now_btn.setVisible(True)
+    
+    def on_update_check_complete(self, success: bool):
+        """Handle update check completion"""
+        if success:
+            logger.info("Update check completed")
+        else:
+            logger.warning("Update check completed with errors")
+    
+    def perform_update(self):
+        """Perform application update"""
+        reply = QMessageBox.question(
+            self,
+            "Confirm Update",
+            "This will update the application and restart it.\n\n"
+            "Do you want to continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        
+        try:
+            logger.info("Starting application update...")
+            self.add_log("=" * 60)
+            self.add_log("Starting application update...")
+            
+            # Disable update button
+            self.update_now_btn.setEnabled(False)
+            self.update_now_btn.setText("Updating...")
+            
+            # Update git repository
+            self.add_log("Updating code from repository...")
+            
+            try:
+                # Fetch latest changes
+                result = subprocess.run(
+                    ['git', 'fetch', 'origin'],
+                    cwd=self.script_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                if result.returncode != 0:
+                    raise Exception(f"git fetch failed: {result.stderr}")
+                
+                # Reset to latest main
+                result = subprocess.run(
+                    ['git', 'reset', '--hard', 'origin/main'],
+                    cwd=self.script_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                if result.returncode != 0:
+                    raise Exception(f"git reset failed: {result.stderr}")
+                
+                self.add_log("Code updated successfully")
+            except Exception as e:
+                error_msg = f"Failed to update code: {e}"
+                logger.error(error_msg)
+                self.add_log(f"ERROR: {error_msg}")
+                QMessageBox.critical(self, "Update Error", error_msg)
+                self.update_now_btn.setEnabled(True)
+                self.update_now_btn.setText("Update Now")
+                return
+            
+            # Update Python dependencies
+            self.add_log("Updating Python dependencies...")
+            
+            try:
+                # Find venv python
+                venv_python = self.script_dir / "venv" / "bin" / "python3"
+                if not venv_python.exists():
+                    venv_python = sys.executable
+                
+                result = subprocess.run(
+                    [str(venv_python), '-m', 'pip', 'install', '-r', 'requirements.txt', '--upgrade'],
+                    cwd=self.script_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=300
+                )
+                if result.returncode != 0:
+                    logger.warning(f"pip upgrade had warnings: {result.stderr}")
+                    self.add_log(f"Warning: {result.stderr}")
+                else:
+                    self.add_log("Dependencies updated successfully")
+            except Exception as e:
+                error_msg = f"Failed to update dependencies: {e}"
+                logger.warning(error_msg)
+                self.add_log(f"WARNING: {error_msg}")
+                # Continue anyway
+            
+            # Restart application
+            self.add_log("Restarting application...")
+            self.add_log("=" * 60)
+            
+            QMessageBox.information(
+                self,
+                "Update Complete",
+                "Application will restart now."
+            )
+            
+            # Restart the application
+            python_executable = sys.executable
+            script_path = str(self.script_dir / "iot_pubsub_gui.py")
+            
+            # Use os.execv to replace current process
+            os.execv(python_executable, [python_executable, script_path])
+            
+        except Exception as e:
+            error_msg = f"Update failed: {e}"
+            logger.error(error_msg)
+            self.add_log(f"ERROR: {error_msg}")
+            QMessageBox.critical(
+                self,
+                "Update Error",
+                f"Failed to update application:\n{error_msg}"
+            )
+            self.update_now_btn.setEnabled(True)
+            self.update_now_btn.setText("Update Now")
     
     def closeEvent(self, event):
         """Handle window close event"""

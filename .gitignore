@@ -26,16 +26,13 @@ logs/
 # Application
 app.pid
 *.pid
+iot_messages.db
+*.db
 
-# Secrets and tokens
-.github_token
-.webhook_secret
+# Secrets and tokens (keep certificates in repo, but ignore personal keys)
 .ngrok_url
-*.pem
-*.key
-*.crt
-id_ed25519
-id_ed25519.pub
+id_ed25519*
+*.backup
 
 # OS
 .DS_Store
