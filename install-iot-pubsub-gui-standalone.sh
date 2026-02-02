@@ -115,42 +115,98 @@ print_step "Step 2: Installing System Dependencies"
 
 print_info "Installing required system packages..."
 
-SYSTEM_PACKAGES=(
+# Required packages (must be installed)
+REQUIRED_PACKAGES=(
     "python3"
     "python3-pip"
     "python3-venv"
     "python3-dev"
     "build-essential"
+    "sqlite3"
+    "libsqlite3-dev"
+)
+
+# Optional packages (for GUI support, may not be available on all systems)
+OPTIONAL_PACKAGES=(
     "libxcb-xinerama0"
     "libxkbcommon-x11-0"
     "libqt6gui6"
     "libqt6widgets6"
     "libqt6core6"
-    "libgl1-mesa-glx"
     "libglib2.0-0"
-    "sqlite3"
-    "libsqlite3-dev"
 )
 
-MISSING_PACKAGES=()
-for package in "${SYSTEM_PACKAGES[@]}"; do
-    # Check if package is installed (more robust check)
+# OpenGL packages - try different names for different systems
+OPENGL_PACKAGES=(
+    "libgl1-mesa-glx"           # Standard Debian/Ubuntu
+    "libgl1"                     # Alternative name
+    "mesa-common-dev"            # Development package
+)
+
+# Check and install required packages
+MISSING_REQUIRED=()
+for package in "${REQUIRED_PACKAGES[@]}"; do
     if ! dpkg -l 2>/dev/null | grep -q "^ii[[:space:]]*$package[[:space:]]" && \
        ! dpkg -l 2>/dev/null | grep -q "^ii[[:space:]]*$package:"; then
-        MISSING_PACKAGES+=("$package")
+        MISSING_REQUIRED+=("$package")
     fi
 done
 
-if [ ${#MISSING_PACKAGES[@]} -gt 0 ]; then
-    print_info "Installing missing packages: ${MISSING_PACKAGES[*]}"
-    if sudo apt-get install -y "${MISSING_PACKAGES[@]}"; then
-        print_success "System packages installed"
+if [ ${#MISSING_REQUIRED[@]} -gt 0 ]; then
+    print_info "Installing required packages: ${MISSING_REQUIRED[*]}"
+    if sudo apt-get install -y "${MISSING_REQUIRED[@]}"; then
+        print_success "Required packages installed"
     else
-        print_error "Failed to install some system packages"
+        print_error "Failed to install required packages"
         exit 1
     fi
 else
-    print_success "All required system packages are already installed"
+    print_success "All required packages are already installed"
+fi
+
+# Check and install optional packages
+MISSING_OPTIONAL=()
+for package in "${OPTIONAL_PACKAGES[@]}"; do
+    if ! dpkg -l 2>/dev/null | grep -q "^ii[[:space:]]*$package[[:space:]]" && \
+       ! dpkg -l 2>/dev/null | grep -q "^ii[[:space:]]*$package:"; then
+        MISSING_OPTIONAL+=("$package")
+    fi
+done
+
+if [ ${#MISSING_OPTIONAL[@]} -gt 0 ]; then
+    print_info "Installing optional packages: ${MISSING_OPTIONAL[*]}"
+    if sudo apt-get install -y "${MISSING_OPTIONAL[@]}" 2>/dev/null; then
+        print_success "Optional packages installed"
+    else
+        print_warning "Some optional packages could not be installed (this may be okay)"
+    fi
+fi
+
+# Try to install OpenGL support (try each package name until one works)
+OPENGL_INSTALLED=false
+for gl_package in "${OPENGL_PACKAGES[@]}"; do
+    if dpkg -l 2>/dev/null | grep -q "^ii[[:space:]]*$gl_package[[:space:]]" || \
+       dpkg -l 2>/dev/null | grep -q "^ii[[:space:]]*$gl_package:"; then
+        OPENGL_INSTALLED=true
+        print_success "OpenGL support already installed ($gl_package)"
+        break
+    fi
+done
+
+if [ "$OPENGL_INSTALLED" = false ]; then
+    print_info "Attempting to install OpenGL support..."
+    for gl_package in "${OPENGL_PACKAGES[@]}"; do
+        if sudo apt-get install -y "$gl_package" 2>/dev/null; then
+            print_success "OpenGL support installed ($gl_package)"
+            OPENGL_INSTALLED=true
+            break
+        fi
+    done
+    
+    if [ "$OPENGL_INSTALLED" = false ]; then
+        print_warning "Could not install OpenGL packages - GUI may still work on Raspberry Pi"
+        print_info "Raspberry Pi uses its own OpenGL implementation which may already be available"
+    fi
 fi
 
 # ============================================================================
