@@ -33,13 +33,15 @@ AWS IoT Pub/Sub GUI Application using PyQt6 and AWS IoT Device SDK v2.
    ```
 
 3. Launch the application:
-   - Double-click the "IoT PubSub GUI" icon on your desktop, or
-   - Run from terminal:
+   - **Desktop Icon**: Double-click the "IoT PubSub GUI" icon on your desktop
+   - **Terminal**: 
      ```bash
      cd ~/iot-pubsub-gui
      source venv/bin/activate
      python3 iot_pubsub_gui.py
      ```
+
+**See [HOW_TO_RUN.md](HOW_TO_RUN.md) for detailed instructions on running the application.**
 
 **See [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) for detailed deployment instructions.**
 
