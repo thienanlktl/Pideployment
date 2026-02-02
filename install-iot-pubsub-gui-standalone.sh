@@ -478,10 +478,10 @@ class AWSIoTPubSubGUI(QMainWindow):
             for name, path in cert_files.items():
                 if os.path.exists(path):
                     file_size = os.path.getsize(path)
-                    self.add_log(f"  ✓ {name}: {path} (Size: {file_size} bytes)")
+                    self.add_log(f"  âœ“ {name}: {path} (Size: {file_size} bytes)")
                 else:
                     missing_files.append(f"{name}: {path}")
-                    self.add_log(f"  ✗ {name}: NOT FOUND - {path}")
+                    self.add_log(f"  âœ— {name}: NOT FOUND - {path}")
             
             if missing_files:
                 error_msg = f"Certificate files not found:\n" + "\n".join(missing_files)
@@ -503,7 +503,7 @@ class AWSIoTPubSubGUI(QMainWindow):
                     clean_session=False,
                     keep_alive_secs=30
                 )
-                self.add_log("  ✓ MQTT connection object created successfully")
+                self.add_log("  âœ“ MQTT connection object created successfully")
             except Exception as e:
                 error_msg = f"Failed to create MQTT connection object: {str(e)}"
                 self.add_log(f"ERROR: {error_msg}")
@@ -518,9 +518,9 @@ class AWSIoTPubSubGUI(QMainWindow):
             self.add_log("Step 3: Establishing connection to AWS IoT Core...")
             try:
                 connect_future = self.mqtt_connection.connect()
-                self.add_log("  → Waiting for connection (timeout: 10 seconds)...")
+                self.add_log("  â†’ Waiting for connection (timeout: 10 seconds)...")
                 connect_future.result(timeout=10)
-                self.add_log("  ✓ Connection established successfully!")
+                self.add_log("  âœ“ Connection established successfully!")
             except Exception as e:
                 error_msg = f"Connection timeout or failed: {str(e)}"
                 self.add_log(f"ERROR: {error_msg}")
@@ -545,7 +545,7 @@ class AWSIoTPubSubGUI(QMainWindow):
             self.is_connected = True
             self.update_status("Connected!", True)
             self.add_log("=" * 60)
-            self.add_log(f"✓ Successfully connected to AWS IoT Core!")
+            self.add_log(f"âœ“ Successfully connected to AWS IoT Core!")
             self.add_log(f"  Endpoint: {self.endpoint}")
             self.add_log(f"  Client ID: {self.client_id}")
             self.add_log("=" * 60)
