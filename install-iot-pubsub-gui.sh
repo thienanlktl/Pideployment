@@ -328,6 +328,21 @@ DESKTOP_FILE="$DESKTOP_DIR/iot-pubsub-gui.desktop"
 # Ensure Desktop directory exists
 mkdir -p "$DESKTOP_DIR"
 
+# Create a wrapper script for better error handling
+WRAPPER_SCRIPT="$INSTALL_DIR/run-iot-pubsub-gui.sh"
+print_info "Creating launcher wrapper script..."
+cat > "$WRAPPER_SCRIPT" << 'WRAPPER_EOF'
+#!/bin/bash
+# Wrapper script for IoT PubSub GUI
+INSTALL_DIR="$HOME/iot-pubsub-gui"
+cd "$INSTALL_DIR" || exit 1
+source venv/bin/activate || exit 1
+python3 iot_pubsub_gui.py "$@"
+WRAPPER_EOF
+
+chmod +x "$WRAPPER_SCRIPT"
+print_success "Wrapper script created: $WRAPPER_SCRIPT"
+
 # Create desktop launcher
 print_info "Creating desktop launcher..."
 
@@ -337,10 +352,10 @@ Version=1.0
 Type=Application
 Name=IoT PubSub GUI
 Comment=Launch IoT PubSub GUI Application
-Exec=bash -c "cd '$INSTALL_DIR' && source venv/bin/activate && python3 iot_pubsub_gui.py"
+Exec=$WRAPPER_SCRIPT
 Path=$INSTALL_DIR
 Icon=application-x-executable
-Terminal=false
+Terminal=true
 Categories=Network;Utility;
 StartupNotify=true
 Keywords=IoT;AWS;MQTT;PubSub;
