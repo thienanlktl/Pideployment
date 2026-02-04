@@ -895,7 +895,13 @@ class AWSIoTPubSubGUI(QMainWindow):
             """Check for updates in background thread"""
             try:
                 logger.info("Starting update check...")
-                self.add_log("Checking for updates...")
+                # Use QMetaObject.invokeMethod to safely call add_log from background thread
+                QMetaObject.invokeMethod(
+                    self,
+                    "add_log",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, "Checking for updates...")
+                )
                 
                 # Get local version
                 local_version = __version__
@@ -947,10 +953,20 @@ class AWSIoTPubSubGUI(QMainWindow):
                             logger.warning(f"GitHub API returned status {response.status_code}")
                     except Exception as e:
                         logger.warning(f"Error checking Release branches: {e}")
-                        self.add_log(f"Update check error: {e}")
+                        QMetaObject.invokeMethod(
+                            self,
+                            "add_log",
+                            Qt.ConnectionType.QueuedConnection,
+                            Q_ARG(str, f"Update check error: {e}")
+                        )
                 else:
                     logger.warning("requests library not available, cannot check for updates")
-                    self.add_log("Update check unavailable: requests library not installed")
+                    QMetaObject.invokeMethod(
+                        self,
+                        "add_log",
+                        Qt.ConnectionType.QueuedConnection,
+                        Q_ARG(str, "Update check unavailable: requests library not installed")
+                    )
                 
                 # Emit signal if update is available
                 if update_available and latest_release_version:
@@ -958,12 +974,22 @@ class AWSIoTPubSubGUI(QMainWindow):
                     logger.info("Update notification sent to UI")
                 else:
                     logger.info("Application is up to date")
-                    self.add_log("Application is up to date")
+                    QMetaObject.invokeMethod(
+                        self,
+                        "add_log",
+                        Qt.ConnectionType.QueuedConnection,
+                        Q_ARG(str, "Application is up to date")
+                    )
                 
                 self.update_checker.check_complete.emit(True)
             except Exception as e:
                 logger.error(f"Error in update check: {e}")
-                self.add_log(f"Update check failed: {e}")
+                QMetaObject.invokeMethod(
+                    self,
+                    "add_log",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, f"Update check failed: {e}")
+                )
                 self.update_checker.check_complete.emit(False)
         
         # Run in background thread
