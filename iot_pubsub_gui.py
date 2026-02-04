@@ -112,8 +112,8 @@ class AWSIoTPubSubGUI(QMainWindow):
         self.update_checker = UpdateChecker()
         self.update_checker.update_available.connect(self.on_update_available)
         self.update_checker.check_complete.connect(self.on_update_check_complete)
-        self.latest_remote_sha = None
-        self.local_sha = None
+        self.latest_release_version = None
+        self.local_version = None
         self.script_dir = script_dir
         
         self.init_ui()
@@ -144,22 +144,18 @@ class AWSIoTPubSubGUI(QMainWindow):
         self.version_label.setStyleSheet("font-size: 10pt; color: gray; padding: 5px;")
         top_bar_layout.addWidget(self.version_label)
         
+        # New version available label (clickable, next to version label, initially hidden)
+        self.new_version_label = QPushButton()
+        self.new_version_label.setStyleSheet(
+            "font-size: 10pt; color: #2196F3; padding: 5px; "
+            "background-color: transparent; border: none; text-decoration: underline;"
+        )
+        self.new_version_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.new_version_label.clicked.connect(self.on_new_version_clicked)
+        self.new_version_label.setVisible(False)
+        top_bar_layout.addWidget(self.new_version_label)
+        
         top_bar_layout.addStretch()
-        
-        # Update notification (right side, initially hidden)
-        self.update_notification_layout = QHBoxLayout()
-        self.update_notification_label = QLabel("New update available!")
-        self.update_notification_label.setStyleSheet("font-size: 10pt; color: orange; padding: 5px;")
-        self.update_notification_label.setVisible(False)
-        self.update_notification_layout.addWidget(self.update_notification_label)
-        
-        self.update_now_btn = QPushButton("Update Now")
-        self.update_now_btn.setStyleSheet("font-size: 10pt; padding: 5px; background-color: #4CAF50; color: white;")
-        self.update_now_btn.clicked.connect(self.perform_update)
-        self.update_now_btn.setVisible(False)
-        self.update_notification_layout.addWidget(self.update_now_btn)
-        
-        top_bar_layout.addLayout(self.update_notification_layout)
         main_layout.addLayout(top_bar_layout)
         
         # Status of update label (red) - keep for backward compatibility, but hide it
@@ -803,73 +799,144 @@ class AWSIoTPubSubGUI(QMainWindow):
             QMessageBox.critical(self, "Database Error", error_msg)
     
     def start_update_check(self):
-        """Start update check in background thread"""
+        """Start update check in background thread - checks for Release/* branches"""
         def check_update():
             """Check for updates in background thread"""
             try:
                 logger.info("Starting update check...")
+                self.add_log("Checking for updates...")
                 
-                # Get local git commit SHA
-                local_sha = None
-                try:
-                    result = subprocess.run(
-                        ['git', 'rev-parse', 'HEAD'],
-                        cwd=self.script_dir,
-                        capture_output=True,
-                        text=True,
-                        timeout=5
-                    )
-                    if result.returncode == 0:
-                        local_sha = result.stdout.strip()
-                        logger.info(f"Local commit SHA: {local_sha[:8]}")
-                    else:
-                        logger.warning("Could not get local commit SHA (not a git repo or git not available)")
-                except Exception as e:
-                    logger.warning(f"Error getting local commit SHA: {e}")
+                # Get local version
+                local_version = __version__
+                logger.info(f"Local version: {local_version}")
                 
-                # Get remote commit SHA from GitHub API
-                remote_sha = None
+                # Check for Release branches using GitHub API
+                update_available = False
+                latest_release_version = None
+                
                 if REQUESTS_AVAILABLE:
                     try:
-                        api_url = "https://api.github.com/repos/thienanlktl/Pideployment/commits/main"
-                        response = requests.get(api_url, timeout=10)
+                        # Get all branches from GitHub
+                        branches_url = "https://api.github.com/repos/thienanlktl/Pideployment/branches"
+                        response = requests.get(branches_url, timeout=10)
+                        
                         if response.status_code == 200:
-                            data = response.json()
-                            remote_sha = data.get('sha', '').strip()
-                            logger.info(f"Remote commit SHA: {remote_sha[:8]}")
+                            branches_data = response.json()
+                            logger.info(f"Found {len(branches_data)} branches")
+                            
+                            # Filter Release/* branches and extract versions
+                            release_versions = []
+                            for branch in branches_data:
+                                branch_name = branch.get('name', '')
+                                if branch_name.startswith('Release/'):
+                                    # Extract version from branch name (Release/1.0.2 -> 1.0.2)
+                                    version_str = branch_name.replace('Release/', '').strip()
+                                    if version_str:
+                                        release_versions.append(version_str)
+                                        logger.info(f"Found Release branch: {branch_name} (version: {version_str})")
+                            
+                            if release_versions:
+                                # Find the latest version by comparing all release versions
+                                latest_release_version = release_versions[0]
+                                for version in release_versions:
+                                    if self._compare_versions(latest_release_version, version) < 0:
+                                        latest_release_version = version
+                                
+                                logger.info(f"Latest Release branch version: {latest_release_version}")
+                                
+                                # Compare with local version
+                                if self._compare_versions(local_version, latest_release_version) < 0:
+                                    update_available = True
+                                    logger.info(f"Update available! Latest Release: {latest_release_version}, Current: {local_version}")
+                                else:
+                                    logger.info(f"Application is up to date (current: {local_version}, latest release: {latest_release_version})")
+                            else:
+                                logger.info("No Release/* branches found")
                         else:
                             logger.warning(f"GitHub API returned status {response.status_code}")
                     except Exception as e:
-                        logger.warning(f"Error checking remote commit: {e}")
+                        logger.warning(f"Error checking Release branches: {e}")
+                        self.add_log(f"Update check error: {e}")
                 else:
                     logger.warning("requests library not available, cannot check for updates")
+                    self.add_log("Update check unavailable: requests library not installed")
                 
-                # Compare and emit signal
-                if local_sha and remote_sha:
-                    if local_sha != remote_sha:
-                        logger.info("Update available!")
-                        self.update_checker.update_available.emit(remote_sha, local_sha)
-                    else:
-                        logger.info("Application is up to date")
+                # Emit signal if update is available
+                if update_available and latest_release_version:
+                    self.update_checker.update_available.emit(latest_release_version, local_version)
+                    logger.info("Update notification sent to UI")
+                else:
+                    logger.info("Application is up to date")
+                    self.add_log("Application is up to date")
                 
                 self.update_checker.check_complete.emit(True)
             except Exception as e:
                 logger.error(f"Error in update check: {e}")
+                self.add_log(f"Update check failed: {e}")
                 self.update_checker.check_complete.emit(False)
         
         # Run in background thread
         thread = threading.Thread(target=check_update, daemon=True)
         thread.start()
     
-    def on_update_available(self, remote_sha: str, local_sha: str):
+    def _compare_versions(self, v1: str, v2: str) -> int:
+        """Compare two version strings. Returns -1 if v1 < v2, 0 if equal, 1 if v1 > v2"""
+        try:
+            # Split version strings into parts
+            parts1 = [int(x) for x in v1.split('.')]
+            parts2 = [int(x) for x in v2.split('.')]
+            
+            # Pad with zeros to make same length
+            max_len = max(len(parts1), len(parts2))
+            parts1.extend([0] * (max_len - len(parts1)))
+            parts2.extend([0] * (max_len - len(parts2)))
+            
+            # Compare
+            for p1, p2 in zip(parts1, parts2):
+                if p1 < p2:
+                    return -1
+                elif p1 > p2:
+                    return 1
+            return 0
+        except Exception:
+            # If version comparison fails, do string comparison
+            if v1 < v2:
+                return -1
+            elif v1 > v2:
+                return 1
+            return 0
+    
+    def on_update_available(self, remote_version: str, local_version: str):
         """Handle update available signal"""
-        self.latest_remote_sha = remote_sha
-        self.local_sha = local_sha
-        logger.info(f"Update available: {remote_sha[:8]} (current: {local_sha[:8]})")
+        self.latest_release_version = remote_version
+        self.local_version = local_version
+        logger.info(f"Update available: {remote_version} (current: {local_version})")
         
-        # Show update notification
-        self.update_notification_label.setVisible(True)
-        self.update_now_btn.setVisible(True)
+        # Update new version label text and make it visible
+        self.new_version_label.setText(f"→ New version {remote_version} available (click to upgrade)")
+        self.new_version_label.setVisible(True)
+        
+        # Add log message
+        self.add_log(f"Update available! Latest version: {remote_version}, Current version: {local_version}")
+    
+    def on_new_version_clicked(self):
+        """Handle click on new version label - show confirmation dialog"""
+        if not self.latest_release_version:
+            return
+        
+        reply = QMessageBox.question(
+            self,
+            "Confirm Update",
+            f"A new version ({self.latest_release_version}) is available!\n\n"
+            f"Current version: {self.local_version or __version__}\n\n"
+            f"This will update the application and restart it.\n\n"
+            f"Do you want to continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            self.perform_update()
     
     def on_update_check_complete(self, success: bool):
         """Handle update check completion"""
@@ -897,14 +964,22 @@ class AWSIoTPubSubGUI(QMainWindow):
             self.add_log("=" * 60)
             self.add_log("Starting application update...")
             
-            # Disable update button
-            self.update_now_btn.setEnabled(False)
-            self.update_now_btn.setText("Updating...")
+            # Disable update label and show updating status
+            self.new_version_label.setEnabled(False)
+            self.new_version_label.setText("Updating...")
             
             # Update git repository
             self.add_log("Updating code from repository...")
             
             try:
+                # Get the latest release version to checkout
+                target_version = self.latest_release_version
+                if not target_version:
+                    raise Exception("No target version specified for update")
+                
+                release_branch = f"Release/{target_version}"
+                self.add_log(f"Target release branch: {release_branch}")
+                
                 # Fetch latest changes
                 result = subprocess.run(
                     ['git', 'fetch', 'origin'],
@@ -916,9 +991,35 @@ class AWSIoTPubSubGUI(QMainWindow):
                 if result.returncode != 0:
                     raise Exception(f"git fetch failed: {result.stderr}")
                 
-                # Reset to latest main
+                # Checkout the Release branch (create local branch if it doesn't exist)
+                # First, try to checkout existing local branch
                 result = subprocess.run(
-                    ['git', 'reset', '--hard', 'origin/main'],
+                    ['git', 'checkout', release_branch],
+                    cwd=self.script_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                
+                if result.returncode != 0:
+                    # Branch doesn't exist locally, create it from remote
+                    self.add_log(f"Creating local branch {release_branch} from remote...")
+                    result = subprocess.run(
+                        ['git', 'checkout', '-b', release_branch, f'origin/{release_branch}'],
+                        cwd=self.script_dir,
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    if result.returncode != 0:
+                        raise Exception(f"git checkout failed: {result.stderr}")
+                else:
+                    # Branch exists, update it to match remote
+                    self.add_log(f"Updating existing branch {release_branch}...")
+                
+                # Reset hard to ensure clean state matching remote
+                result = subprocess.run(
+                    ['git', 'reset', '--hard', f'origin/{release_branch}'],
                     cwd=self.script_dir,
                     capture_output=True,
                     text=True,
@@ -927,14 +1028,15 @@ class AWSIoTPubSubGUI(QMainWindow):
                 if result.returncode != 0:
                     raise Exception(f"git reset failed: {result.stderr}")
                 
-                self.add_log("Code updated successfully")
+                self.add_log(f"Code updated successfully to {release_branch}")
             except Exception as e:
                 error_msg = f"Failed to update code: {e}"
                 logger.error(error_msg)
                 self.add_log(f"ERROR: {error_msg}")
                 QMessageBox.critical(self, "Update Error", error_msg)
-                self.update_now_btn.setEnabled(True)
-                self.update_now_btn.setText("Update Now")
+                if self.latest_release_version:
+                    self.new_version_label.setText(f"→ New version {self.latest_release_version} available (click to upgrade)")
+                self.new_version_label.setEnabled(True)
                 return
             
             # Update Python dependencies
@@ -990,8 +1092,9 @@ class AWSIoTPubSubGUI(QMainWindow):
                 "Update Error",
                 f"Failed to update application:\n{error_msg}"
             )
-            self.update_now_btn.setEnabled(True)
-            self.update_now_btn.setText("Update Now")
+            if self.latest_release_version:
+                self.new_version_label.setText(f"→ New version {self.latest_release_version} available (click to upgrade)")
+            self.new_version_label.setEnabled(True)
     
     def closeEvent(self, event):
         """Handle window close event"""
