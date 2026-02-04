@@ -24,6 +24,83 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
+# Check for required dependencies before importing PyQt6
+def check_dependencies():
+    """Check if all required dependencies are installed"""
+    script_dir = Path(__file__).parent.absolute()
+    
+    # Check if we're using venv Python
+    venv_python_paths = [
+        script_dir / "venv" / "bin" / "python3",
+        script_dir / "venv" / "bin" / "python",
+        script_dir / "venv" / "Scripts" / "python.exe",
+    ]
+    
+    is_venv_python = False
+    for venv_path in venv_python_paths:
+        if Path(sys.executable) == venv_path:
+            is_venv_python = True
+            break
+    
+    # Also check if we're in a virtual environment (hasattr(sys, 'real_prefix') or sys.base_prefix != sys.prefix)
+    in_venv = hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix)
+    
+    missing_deps = []
+    required_modules = {
+        'PyQt6': 'PyQt6',
+        'awscrt': 'awscrt',
+        'awsiot': 'awsiotsdk',
+    }
+    
+    for module_name, package_name in required_modules.items():
+        try:
+            __import__(module_name)
+        except ImportError:
+            missing_deps.append(package_name)
+    
+    if missing_deps:
+        print("=" * 60)
+        print("ERROR: Missing required dependencies!")
+        print("=" * 60)
+        print(f"The following packages are not installed: {', '.join(missing_deps)}")
+        print(f"\nCurrent Python: {sys.executable}")
+        
+        # Check if venv exists
+        venv_exists = any(p.exists() for p in venv_python_paths)
+        
+        if venv_exists and not (is_venv_python or in_venv):
+            print("\n⚠ WARNING: Virtual environment exists but you're using system Python!")
+            print("You should run the application using the virtual environment:")
+            print(f"  {venv_python_paths[0] if venv_python_paths[0].exists() else venv_python_paths[1]} iot_pubsub_gui.py")
+            print("\nOr activate the virtual environment first:")
+            if sys.platform == 'win32':
+                print("  venv\\Scripts\\activate")
+            else:
+                print("  source venv/bin/activate")
+            print("  python3 iot_pubsub_gui.py")
+        
+        print("\nTo install dependencies:")
+        if venv_exists and not (is_venv_python or in_venv):
+            venv_python = next((p for p in venv_python_paths if p.exists()), None)
+            if venv_python:
+                print(f"  {venv_python} -m pip install -r requirements.txt")
+        else:
+            print("  pip install -r requirements.txt")
+            if not venv_exists:
+                print("\nOr create and use a virtual environment:")
+                print("  python3 -m venv venv")
+                if sys.platform == 'win32':
+                    print("  venv\\Scripts\\activate")
+                else:
+                    print("  source venv/bin/activate")
+                print("  pip install -r requirements.txt")
+        
+        print("=" * 60)
+        sys.exit(1)
+
+# Check dependencies before proceeding
+check_dependencies()
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QTextEdit, QPushButton, QGroupBox, QMessageBox,
