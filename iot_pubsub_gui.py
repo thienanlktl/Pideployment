@@ -154,6 +154,7 @@ class UpdateChecker(QObject):
     """Signal emitter for update check results"""
     update_available = pyqtSignal(str, str)  # latest_sha, local_sha
     check_complete = pyqtSignal(bool)  # success
+    log_message = pyqtSignal(str)  # log message from background thread
 
 
 class AWSIoTPubSubGUI(QMainWindow):
@@ -189,6 +190,7 @@ class AWSIoTPubSubGUI(QMainWindow):
         self.update_checker = UpdateChecker()
         self.update_checker.update_available.connect(self.on_update_available)
         self.update_checker.check_complete.connect(self.on_update_check_complete)
+        self.update_checker.log_message.connect(self.add_log)  # Connect log signal for thread-safe logging
         self.latest_release_version = None
         self.local_version = None
         self.script_dir = script_dir
@@ -895,13 +897,8 @@ class AWSIoTPubSubGUI(QMainWindow):
             """Check for updates in background thread"""
             try:
                 logger.info("Starting update check...")
-                # Use QMetaObject.invokeMethod to safely call add_log from background thread
-                QMetaObject.invokeMethod(
-                    self,
-                    "add_log",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, "Checking for updates...")
-                )
+                # Use signal to safely call add_log from background thread
+                self.update_checker.log_message.emit("Checking for updates...")
                 
                 # Get local version
                 local_version = __version__
@@ -953,20 +950,10 @@ class AWSIoTPubSubGUI(QMainWindow):
                             logger.warning(f"GitHub API returned status {response.status_code}")
                     except Exception as e:
                         logger.warning(f"Error checking Release branches: {e}")
-                        QMetaObject.invokeMethod(
-                            self,
-                            "add_log",
-                            Qt.ConnectionType.QueuedConnection,
-                            Q_ARG(str, f"Update check error: {e}")
-                        )
+                        self.update_checker.log_message.emit(f"Update check error: {e}")
                 else:
                     logger.warning("requests library not available, cannot check for updates")
-                    QMetaObject.invokeMethod(
-                        self,
-                        "add_log",
-                        Qt.ConnectionType.QueuedConnection,
-                        Q_ARG(str, "Update check unavailable: requests library not installed")
-                    )
+                    self.update_checker.log_message.emit("Update check unavailable: requests library not installed")
                 
                 # Emit signal if update is available
                 if update_available and latest_release_version:
@@ -974,22 +961,12 @@ class AWSIoTPubSubGUI(QMainWindow):
                     logger.info("Update notification sent to UI")
                 else:
                     logger.info("Application is up to date")
-                    QMetaObject.invokeMethod(
-                        self,
-                        "add_log",
-                        Qt.ConnectionType.QueuedConnection,
-                        Q_ARG(str, "Application is up to date")
-                    )
+                    self.update_checker.log_message.emit("Application is up to date")
                 
                 self.update_checker.check_complete.emit(True)
             except Exception as e:
                 logger.error(f"Error in update check: {e}")
-                QMetaObject.invokeMethod(
-                    self,
-                    "add_log",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, f"Update check failed: {e}")
-                )
+                self.update_checker.log_message.emit(f"Update check failed: {e}")
                 self.update_checker.check_complete.emit(False)
         
         # Run in background thread
