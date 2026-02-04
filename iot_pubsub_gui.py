@@ -115,6 +115,7 @@ class AWSIoTPubSubGUI(QMainWindow):
         self.latest_release_version = None
         self.local_version = None
         self.script_dir = script_dir
+        self._venv_python_for_restart = None  # Will be set during update process
         
         self.init_ui()
         self.init_database()  # Initialize database after UI so log_text exists
@@ -798,6 +799,19 @@ class AWSIoTPubSubGUI(QMainWindow):
             self.add_log(error_msg)
             QMessageBox.critical(self, "Database Error", error_msg)
     
+    def _get_venv_python(self):
+        """Get the virtual environment Python executable path"""
+        venv_paths = [
+            self.script_dir / "venv" / "bin" / "python3",
+            self.script_dir / "venv" / "bin" / "python",
+            self.script_dir / "venv" / "Scripts" / "python.exe",  # Windows
+        ]
+        
+        for venv_path in venv_paths:
+            if venv_path.exists():
+                return venv_path
+        return None
+    
     def start_update_check(self):
         """Start update check in background thread - checks for Release/* branches"""
         def check_update():
@@ -936,7 +950,7 @@ class AWSIoTPubSubGUI(QMainWindow):
         )
         
         if reply == QMessageBox.StandardButton.Yes:
-            self.perform_update()
+            self.start_update_process()
     
     def on_update_check_complete(self, success: bool):
         """Handle update check completion"""
@@ -945,156 +959,94 @@ class AWSIoTPubSubGUI(QMainWindow):
         else:
             logger.warning("Update check completed with errors")
     
-    def perform_update(self):
-        """Perform application update"""
-        reply = QMessageBox.question(
-            self,
-            "Confirm Update",
-            "This will update the application and restart it.\n\n"
-            "Do you want to continue?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
-        )
-        
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-        
+    def start_update_process(self):
+        """Start the update process by launching update service and shutting down"""
         try:
-            logger.info("Starting application update...")
+            logger.info("Starting update process...")
             self.add_log("=" * 60)
-            self.add_log("Starting application update...")
+            self.add_log("Preparing for update...")
             
             # Disable update label and show updating status
             self.new_version_label.setEnabled(False)
-            self.new_version_label.setText("Updating...")
+            self.new_version_label.setText("Preparing update...")
             
-            # Update git repository
-            self.add_log("Updating code from repository...")
+            # Get the target version
+            target_version = self.latest_release_version
+            if not target_version:
+                raise Exception("No target version specified for update")
             
-            try:
-                # Get the latest release version to checkout
-                target_version = self.latest_release_version
-                if not target_version:
-                    raise Exception("No target version specified for update")
-                
-                release_branch = f"Release/{target_version}"
-                self.add_log(f"Target release branch: {release_branch}")
-                
-                # Fetch latest changes
-                result = subprocess.run(
-                    ['git', 'fetch', 'origin'],
-                    cwd=self.script_dir,
-                    capture_output=True,
-                    text=True,
-                    timeout=30
+            # Find update service script
+            update_service_script = self.script_dir / "update_service.py"
+            if not update_service_script.exists():
+                raise Exception(f"Update service script not found: {update_service_script}")
+            
+            # Get Python executable to run update service
+            venv_python = self._get_venv_python()
+            if not venv_python:
+                venv_python = Path(sys.executable)
+            
+            self.add_log(f"Launching update service for version {target_version}...")
+            logger.info(f"Launching update service: {venv_python} {update_service_script} {target_version} {self.script_dir}")
+            
+            # Launch update service in background
+            if sys.platform == 'win32':
+                # Windows
+                subprocess.Popen(
+                    [str(venv_python), str(update_service_script), target_version, str(self.script_dir)],
+                    cwd=str(self.script_dir),
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
                 )
-                if result.returncode != 0:
-                    raise Exception(f"git fetch failed: {result.stderr}")
-                
-                # Checkout the Release branch (create local branch if it doesn't exist)
-                # First, try to checkout existing local branch
-                result = subprocess.run(
-                    ['git', 'checkout', release_branch],
-                    cwd=self.script_dir,
-                    capture_output=True,
-                    text=True,
-                    timeout=10
+            else:
+                # Linux/Mac
+                subprocess.Popen(
+                    [str(venv_python), str(update_service_script), target_version, str(self.script_dir)],
+                    cwd=str(self.script_dir),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True
                 )
-                
-                if result.returncode != 0:
-                    # Branch doesn't exist locally, create it from remote
-                    self.add_log(f"Creating local branch {release_branch} from remote...")
-                    result = subprocess.run(
-                        ['git', 'checkout', '-b', release_branch, f'origin/{release_branch}'],
-                        cwd=self.script_dir,
-                        capture_output=True,
-                        text=True,
-                        timeout=10
-                    )
-                    if result.returncode != 0:
-                        raise Exception(f"git checkout failed: {result.stderr}")
-                else:
-                    # Branch exists, update it to match remote
-                    self.add_log(f"Updating existing branch {release_branch}...")
-                
-                # Reset hard to ensure clean state matching remote
-                result = subprocess.run(
-                    ['git', 'reset', '--hard', f'origin/{release_branch}'],
-                    cwd=self.script_dir,
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                if result.returncode != 0:
-                    raise Exception(f"git reset failed: {result.stderr}")
-                
-                self.add_log(f"Code updated successfully to {release_branch}")
-            except Exception as e:
-                error_msg = f"Failed to update code: {e}"
-                logger.error(error_msg)
-                self.add_log(f"ERROR: {error_msg}")
-                QMessageBox.critical(self, "Update Error", error_msg)
-                if self.latest_release_version:
-                    self.new_version_label.setText(f"→ New version {self.latest_release_version} available (click to upgrade)")
-                self.new_version_label.setEnabled(True)
-                return
             
-            # Update Python dependencies
-            self.add_log("Updating Python dependencies...")
-            
-            try:
-                # Find venv python
-                venv_python = self.script_dir / "venv" / "bin" / "python3"
-                if not venv_python.exists():
-                    venv_python = sys.executable
-                
-                result = subprocess.run(
-                    [str(venv_python), '-m', 'pip', 'install', '-r', 'requirements.txt', '--upgrade'],
-                    cwd=self.script_dir,
-                    capture_output=True,
-                    text=True,
-                    timeout=300
-                )
-                if result.returncode != 0:
-                    logger.warning(f"pip upgrade had warnings: {result.stderr}")
-                    self.add_log(f"Warning: {result.stderr}")
-                else:
-                    self.add_log("Dependencies updated successfully")
-            except Exception as e:
-                error_msg = f"Failed to update dependencies: {e}"
-                logger.warning(error_msg)
-                self.add_log(f"WARNING: {error_msg}")
-                # Continue anyway
-            
-            # Restart application
-            self.add_log("Restarting application...")
+            self.add_log("Update service launched. Application will now close...")
+            self.add_log("The update service will handle the update and restart.")
             self.add_log("=" * 60)
             
-            QMessageBox.information(
-                self,
-                "Update Complete",
-                "Application will restart now."
-            )
-            
-            # Restart the application
-            python_executable = sys.executable
-            script_path = str(self.script_dir / "iot_pubsub_gui.py")
-            
-            # Use os.execv to replace current process
-            os.execv(python_executable, [python_executable, script_path])
+            # Give a moment for the update service to start
+            QTimer.singleShot(500, self.shutdown_application)
             
         except Exception as e:
-            error_msg = f"Update failed: {e}"
+            error_msg = f"Failed to start update process: {e}"
             logger.error(error_msg)
             self.add_log(f"ERROR: {error_msg}")
             QMessageBox.critical(
                 self,
                 "Update Error",
-                f"Failed to update application:\n{error_msg}"
+                f"Failed to start update process:\n{error_msg}"
             )
             if self.latest_release_version:
                 self.new_version_label.setText(f"→ New version {self.latest_release_version} available (click to upgrade)")
             self.new_version_label.setEnabled(True)
+    
+    def shutdown_application(self):
+        """Shutdown the application gracefully"""
+        try:
+            logger.info("Shutting down application for update...")
+            self.add_log("Shutting down application...")
+            
+            # Disconnect from IoT if connected
+            if self.is_connected:
+                self.disconnect_from_iot()
+            
+            # Close the application
+            QApplication.instance().quit()
+            
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}")
+            # Force quit if graceful shutdown fails
+            QApplication.instance().quit()
+    
+    def perform_update(self):
+        """Legacy method - kept for backward compatibility but redirects to start_update_process"""
+        self.start_update_process()
     
     def closeEvent(self, event):
         """Handle window close event"""
