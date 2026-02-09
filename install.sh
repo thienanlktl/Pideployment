@@ -234,15 +234,19 @@ DESKTOP_DIR="$HOME/.local/share/applications"
 mkdir -p "$DESKTOP_DIR"
 DESKTOP_FILE="$DESKTOP_DIR/iot-pubsub-gui.desktop"
 
-# Launcher script: single executable so desktop runs it without "Execute?" confirmation
+# Launcher script: must be in repo so it survives in-app update (git clean -fd removes untracked files)
 LAUNCHER="$INSTALL_DIR/iot-pubsub-gui-launch.sh"
-cat > "$LAUNCHER" << 'LAUNCHER_EOF'
+if [ ! -f "$LAUNCHER" ]; then
+    cat > "$LAUNCHER" << 'LAUNCHER_EOF'
 #!/bin/bash
 cd "$(dirname "$(readlink -f "$0")")"
 exec ./venv/bin/python3 iot_pubsub_gui.py "$@"
 LAUNCHER_EOF
+    ok "Launcher script created: $LAUNCHER"
+fi
 chmod +x "$LAUNCHER"
-ok "Launcher script: $LAUNCHER"
+sed -i 's/\r$//' "$LAUNCHER" 2>/dev/null || true
+ok "Launcher script ready: $LAUNCHER"
 
 # Use custom icon if present in repo (PNG or SVG), otherwise system generic
 if [ -f "$INSTALL_DIR/iot-pubsub-gui.png" ]; then
@@ -268,20 +272,53 @@ Categories=Network;Utility;
 StartupNotify=true
 Keywords=IoT;AWS;MQTT;PubSub;
 EOF
-
+# Ensure Unix line endings (avoids "invalid desktop entry" on Pi if repo had CRLF)
+sed -i 's/\r$//' "$DESKTOP_FILE" 2>/dev/null || true
 ok "Desktop/menu entry created: $DESKTOP_FILE"
 
-# Copy to Desktop so user has a clickable icon on the desktop (runs immediately, no confirmation)
+# Mark as trusted so it launches without "This file seems to be an executable script" confirmation
+if command -v gio &>/dev/null; then
+    gio set "$DESKTOP_FILE" metadata::trusted true 2>/dev/null && ok "Launcher marked trusted" || true
+fi
+
+# One-time helper: at next graphical login, set trust on Desktop copy (fixes SSH installs). Runs once then removes itself.
+# Store outside install dir so in-app update (git clean) does not remove it.
+TRUST_ONCE_DIR="$HOME/.local/share/iot-pubsub-gui"
+mkdir -p "$TRUST_ONCE_DIR"
+TRUST_ONCE_SCRIPT="$TRUST_ONCE_DIR/set-desktop-trust-once.sh"
+TRUST_ONCE_AUTOSTART="$HOME/.config/autostart/iot-pubsub-gui-trust-once.desktop"
+cat > "$TRUST_ONCE_SCRIPT" << 'TRUSTSCRIPT'
+#!/bin/bash
+sleep 3
+gio set "$HOME/.local/share/applications/iot-pubsub-gui.desktop" metadata::trusted true 2>/dev/null
+gio set "$HOME/Desktop/iot-pubsub-gui.desktop" metadata::trusted true 2>/dev/null
+rm -f "$HOME/.config/autostart/iot-pubsub-gui-trust-once.desktop"
+TRUSTSCRIPT
+chmod +x "$TRUST_ONCE_SCRIPT"
+sed -i 's/\r$//' "$TRUST_ONCE_SCRIPT" 2>/dev/null || true
+mkdir -p "$HOME/.config/autostart"
+cat > "$TRUST_ONCE_AUTOSTART" << EOF
+[Desktop Entry]
+Type=Application
+Name=IoT PubSub GUI - Trust desktop icon (once)
+Exec=$TRUST_ONCE_SCRIPT
+Terminal=false
+X-GNOME-Autostart-enabled=true
+Hidden=true
+EOF
+sed -i 's/\r$//' "$TRUST_ONCE_AUTOSTART" 2>/dev/null || true
+ok "One-time trust helper added (runs at next login so desktop icon runs without confirmation)"
+
+# Copy (not symlink) to Desktop so Pi desktop accepts it; symlinks can cause "invalid desktop entry file"
 DESKTOP_ICON="$HOME/Desktop/iot-pubsub-gui.desktop"
 if [ -d "$HOME/Desktop" ]; then
     cp "$DESKTOP_FILE" "$DESKTOP_ICON"
     chmod +x "$DESKTOP_ICON"
-    # Mark as trusted so it launches on click without "Do you want to run?" (Raspberry Pi OS / PCManFM)
+    sed -i 's/\r$//' "$DESKTOP_ICON" 2>/dev/null || true
     if command -v gio &>/dev/null; then
-        gio set "$DESKTOP_ICON" metadata::trusted true 2>/dev/null && ok "Desktop icon trusted (launch without confirmation)" || true
+        gio set "$DESKTOP_ICON" metadata::trusted true 2>/dev/null && ok "Desktop icon trusted" || true
     fi
     ok "Desktop icon created: $DESKTOP_ICON (click to run)"
-    info "If the icon still asks 'Run?', run once from a terminal on the Pi: gio set \"$DESKTOP_ICON\" metadata::trusted true"
 else
     warn "Desktop folder not found; skipping desktop icon. Menu shortcut still available."
 fi
@@ -320,7 +357,7 @@ echo "  Installation complete"
 echo "=============================================="
 echo ""
 echo "  To run $APP_NAME:"
-echo "    • From desktop: click 'IoT PubSub GUI' on your desktop (runs immediately)"
+echo "    • From desktop: click 'IoT PubSub GUI' (after next login it runs without confirmation)"
 echo "    • From menu: look for '$APP_NAME' in your applications menu"
 echo "    • From terminal:"
 echo "        cd $INSTALL_DIR"
