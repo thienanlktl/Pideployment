@@ -234,6 +234,16 @@ DESKTOP_DIR="$HOME/.local/share/applications"
 mkdir -p "$DESKTOP_DIR"
 DESKTOP_FILE="$DESKTOP_DIR/iot-pubsub-gui.desktop"
 
+# Launcher script: single executable so desktop runs it without "Execute?" confirmation
+LAUNCHER="$INSTALL_DIR/iot-pubsub-gui-launch.sh"
+cat > "$LAUNCHER" << 'LAUNCHER_EOF'
+#!/bin/bash
+cd "$(dirname "$(readlink -f "$0")")"
+exec ./venv/bin/python3 iot_pubsub_gui.py "$@"
+LAUNCHER_EOF
+chmod +x "$LAUNCHER"
+ok "Launcher script: $LAUNCHER"
+
 # Use custom icon if present in repo (PNG or SVG), otherwise system generic
 if [ -f "$INSTALL_DIR/iot-pubsub-gui.png" ]; then
     ICON_LINE="Icon=$INSTALL_DIR/iot-pubsub-gui.png"
@@ -243,13 +253,14 @@ else
     ICON_LINE="Icon=application-x-executable"
 fi
 
+# Exec is a single path so the desktop runs immediately without confirmation
 cat > "$DESKTOP_FILE" << EOF
 [Desktop Entry]
 Version=1.0
 Type=Application
 Name=$APP_NAME
 Comment=AWS IoT Pub/Sub GUI for Raspberry Pi
-Exec=bash -c 'cd "$INSTALL_DIR" && "$VENV/bin/python3" iot_pubsub_gui.py'
+Exec=$LAUNCHER
 Path=$INSTALL_DIR
 $ICON_LINE
 Terminal=false
@@ -260,16 +271,17 @@ EOF
 
 ok "Desktop/menu entry created: $DESKTOP_FILE"
 
-# Copy to Desktop so user has a clickable icon on the desktop
+# Copy to Desktop so user has a clickable icon on the desktop (runs immediately, no confirmation)
 DESKTOP_ICON="$HOME/Desktop/iot-pubsub-gui.desktop"
 if [ -d "$HOME/Desktop" ]; then
     cp "$DESKTOP_FILE" "$DESKTOP_ICON"
     chmod +x "$DESKTOP_ICON"
-    # Mark as trusted so it launches on double-click (Raspberry Pi OS / PCManFM)
+    # Mark as trusted so it launches on click without "Do you want to run?" (Raspberry Pi OS / PCManFM)
     if command -v gio &>/dev/null; then
-        gio set "$DESKTOP_ICON" metadata::trusted true 2>/dev/null || true
+        gio set "$DESKTOP_ICON" metadata::trusted true 2>/dev/null && ok "Desktop icon trusted (launch without confirmation)" || true
     fi
-    ok "Desktop icon created: $DESKTOP_ICON (double-click to run)"
+    ok "Desktop icon created: $DESKTOP_ICON (click to run)"
+    info "If the icon still asks 'Run?', run once from a terminal on the Pi: gio set \"$DESKTOP_ICON\" metadata::trusted true"
 else
     warn "Desktop folder not found; skipping desktop icon. Menu shortcut still available."
 fi
@@ -308,7 +320,7 @@ echo "  Installation complete"
 echo "=============================================="
 echo ""
 echo "  To run $APP_NAME:"
-echo "    • From desktop: double-click 'IoT PubSub GUI' on your desktop"
+echo "    • From desktop: click 'IoT PubSub GUI' on your desktop (runs immediately)"
 echo "    • From menu: look for '$APP_NAME' in your applications menu"
 echo "    • From terminal:"
 echo "        cd $INSTALL_DIR"
