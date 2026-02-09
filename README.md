@@ -92,7 +92,7 @@ iot-pubsub-gui/
 The application checks for updates on startup (Release/* branches). If a newer version is available, a link appears in the top bar.
 
 **How it works:**
-- Uses **GitPython** inside the app (no external `update_service.py`).
+- Uses **GitPython** inside the app for in-app updates.
 - Update runs in a **background thread**; the GUI stays responsive.
 - A **progress dialog** shows status (e.g. "Fetching...", "Applying updates...") with an indeterminate progress bar and a **Cancel** button.
 - When done, you see a message: **"Restart the application to apply changes"** (restart is not forced).

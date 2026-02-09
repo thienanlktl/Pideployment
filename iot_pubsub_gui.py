@@ -106,7 +106,8 @@ check_dependencies()
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QTextEdit, QPushButton, QGroupBox, QMessageBox,
-    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QProgressBar
+    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QProgressBar,
+    QFrame, QScrollArea, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QObject, pyqtSignal, QMetaObject, Q_ARG, QThread, QTimer
 from PyQt6.QtGui import QTextCursor, QColor
@@ -121,7 +122,7 @@ try:
 except ImportError:
     REQUESTS_AVAILABLE = False
 
-# Try to import GitPython for in-app git updates (replaces update_service.py)
+# Try to import GitPython for in-app git updates
 try:
     import git  # type: ignore[import-untyped]
     GITPYTHON_AVAILABLE = True
@@ -169,55 +170,197 @@ class UpdateChecker(QObject):
 class UpdateProgressSignals(QObject):
     """Signals for update progress dialog (thread-safe GUI updates during git operations)"""
     status_message = pyqtSignal(str)
+    log_line = pyqtSignal(str)  # append to progress log only (e.g. errors, details)
     finished = pyqtSignal(bool, str)  # success, message
 
 
 class UpdateProgressDialog(QDialog):
     """
-    Modal dialog shown during in-app update: progress bar, status text, cancel button.
-    Update runs in a background thread; this dialog stays responsive and shows status.
+    Modal dialog shown during in-app update: progress bar, status log, cancel button.
+    Update runs in a background thread; this dialog stays responsive and shows a live log.
+    Log is also written to a text file when finished (if log_file_path is set).
     """
-    def __init__(self, parent=None, cancel_event=None):
+    def __init__(self, parent=None, cancel_event=None, log_file_path=None):
         super().__init__(parent)
         self.cancel_event = cancel_event or threading.Event()
-        self.setWindowTitle("Updating Application")
+        self.log_file_path = Path(log_file_path) if log_file_path else None
+        self.setWindowTitle("Application Update")
         self.setModal(True)
-        self.setMinimumWidth(420)
+        self.setFixedSize(500, 380)
+        self._finished = False
+        self._success = False
+
+        # Main layout
         layout = QVBoxLayout(self)
-        # Status label
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        # Title
+        title = QLabel("Updating IoT PubSub GUI")
+        title.setStyleSheet(
+            "font-size: 14pt; font-weight: bold; color: #1a73e8; padding: 4px 0;"
+        )
+        layout.addWidget(title)
+
+        # Current status (prominent)
         self.status_label = QLabel("Preparing...")
         self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet("font-size: 11pt; padding: 8px;")
+        self.status_label.setStyleSheet(
+            "font-size: 11pt; color: #333; padding: 6px 0; min-height: 22px;"
+        )
         layout.addWidget(self.status_label)
-        # Indeterminate progress bar
+
+        # Progress bar
         self.progress_bar = QProgressBar(self)
-        self.progress_bar.setRange(0, 0)  # indeterminate
-        self.progress_bar.setMinimumHeight(24)
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setMinimumHeight(10)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #ccc;
+                border-radius: 5px;
+                text-align: center;
+                background: #f0f0f0;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #1a73e8, stop:1 #34a853);
+                border-radius: 4px;
+            }
+        """)
         layout.addWidget(self.progress_bar)
-        # Cancel button (disabled when update finishes)
+
+        # Update log (scrollable); also written to update_progress.log when finished
+        log_label = QLabel("Update log (saved to update_progress.log when finished)")
+        log_label.setStyleSheet("font-size: 10pt; color: #666; padding-top: 8px;")
+        layout.addWidget(log_label)
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMaximumHeight(120)
+        self.log_text.setStyleSheet("""
+            QTextEdit {
+                font-family: 'Consolas', 'Monaco', monospace;
+                font-size: 9pt;
+                background: #f8f9fa;
+                border: 1px solid #dee2e6;
+                border-radius: 4px;
+                padding: 6px;
+            }
+        """)
+        self.log_text.setPlaceholderText("Status messages will appear here...")
+        layout.addWidget(self.log_text)
+
+        # Button
         self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setMinimumHeight(36)
+        self.cancel_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 11pt;
+                padding: 8px 20px;
+                background: #5f6368;
+                color: white;
+                border: none;
+                border-radius: 6px;
+            }
+            QPushButton:hover { background: #4a4d52; }
+            QPushButton:disabled { background: #bdc1c6; color: #5f6368; }
+        """)
         self.cancel_btn.clicked.connect(self._on_cancel)
         layout.addWidget(self.cancel_btn)
-        self._finished = False
+
+        # Start log file when update runs (header line)
+        if self.log_file_path:
+            try:
+                self.log_file_path.write_text(
+                    f"===== Update started {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} =====\n",
+                    encoding="utf-8",
+                )
+            except Exception as e:
+                logger.warning("Could not write update log file header: %s", e)
+        self._append_log("Preparing update...")
+
+    def _append_log(self, line: str):
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.log_text.append(f"[{ts}] {line}")
+        self.log_text.moveCursor(QTextCursor.MoveOperation.End)
+        # Append to log file as we go (so log exists even if dialog is closed)
+        if self.log_file_path:
+            try:
+                with self.log_file_path.open("a", encoding="utf-8") as f:
+                    f.write(f"[{ts}] {line}\n")
+            except Exception:
+                pass
 
     def _on_cancel(self):
         if not self._finished:
             self.cancel_event.set()
             self.status_label.setText("Cancelling...")
+            self._append_log("Cancelling...")
             self.cancel_btn.setEnabled(False)
 
     def set_status(self, text: str):
         self.status_label.setText(text)
+        self._append_log(text)
+
+    def append_log_only(self, text: str):
+        """Append a line to the progress log without changing the status label (e.g. errors, details)."""
+        self._append_log(text)
 
     def set_finished(self, success: bool, message: str):
         self._finished = True
+        self._success = success
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(100 if success else 0)
+        if success:
+            self.progress_bar.setStyleSheet("""
+                QProgressBar {
+                    border: 1px solid #34a853;
+                    border-radius: 5px;
+                    background: #e6f4ea;
+                }
+                QProgressBar::chunk { background: #34a853; border-radius: 4px; }
+            """)
+            self.status_label.setStyleSheet(
+                "font-size: 11pt; font-weight: bold; color: #34a853; padding: 6px 0;"
+            )
+        else:
+            self.progress_bar.setStyleSheet("""
+                QProgressBar {
+                    border: 1px solid #ea4335;
+                    border-radius: 5px;
+                    background: #fce8e6;
+                }
+                QProgressBar::chunk { background: #ea4335; border-radius: 4px; }
+            """)
+            self.status_label.setStyleSheet(
+                "font-size: 11pt; font-weight: bold; color: #ea4335; padding: 6px 0;"
+            )
         self.status_label.setText(message)
-        self.cancel_btn.setEnabled(False)
+        self._append_log("Done: " + message)
+        # Append footer to log file
+        if self.log_file_path:
+            try:
+                with self.log_file_path.open("a", encoding="utf-8") as f:
+                    f.write(f"\n===== Update finished ({'Success' if success else 'Failed'}) {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} =====\n\n")
+                logger.info("Update progress log: %s", self.log_file_path)
+            except Exception as e:
+                logger.warning("Could not append update log footer: %s", e)
         self.cancel_btn.setText("Close")
         self.cancel_btn.setEnabled(True)
-        self.cancel_btn.clicked.disconnect()
+        self.cancel_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 11pt;
+                padding: 8px 20px;
+                background: #1a73e8;
+                color: white;
+                border: none;
+                border-radius: 6px;
+            }
+            QPushButton:hover { background: #1557b0; }
+        """)
+        try:
+            self.cancel_btn.clicked.disconnect()
+        except TypeError:
+            pass
         self.cancel_btn.clicked.connect(self.accept)
 
 
@@ -1136,8 +1279,10 @@ class AWSIoTPubSubGUI(QMainWindow):
         """
         cancel_event = threading.Event()
         progress_signals = UpdateProgressSignals()
-        dialog = UpdateProgressDialog(self, cancel_event=cancel_event)
+        log_file = self.script_dir / "update_progress.log"
+        dialog = UpdateProgressDialog(self, cancel_event=cancel_event, log_file_path=log_file)
         progress_signals.status_message.connect(dialog.set_status)
+        progress_signals.log_line.connect(dialog.append_log_only)
         progress_signals.finished.connect(dialog.set_finished)
 
         def worker():
@@ -1176,34 +1321,65 @@ class AWSIoTPubSubGUI(QMainWindow):
                 return
 
             if not GITPYTHON_AVAILABLE:
+                signals.log_line.emit("ERROR: GitPython not installed.")
                 signals.finished.emit(False, "GitPython not installed. Run: pip install gitpython")
                 return
 
-            repo = git.Repo(script_dir)
+            try:
+                repo = git.Repo(script_dir)
+            except Exception as e:
+                signals.log_line.emit(f"ERROR: {e}")
+                signals.finished.emit(False, "Not a git repository or access denied.")
+                return
+
             if repo.bare:
+                signals.log_line.emit("ERROR: Repository is bare.")
                 signals.finished.emit(False, "Not a git repository (bare).")
                 return
 
             if repo.is_dirty():
+                signals.log_line.emit("ERROR: Working tree has uncommitted changes.")
                 signals.finished.emit(
                     False,
                     "Uncommitted local changes detected. Commit or stash them before updating.",
                 )
                 return
 
+            signals.log_line.emit("Repository OK.")
+
+            release_branch = f"Release/{target_version}"
+            # Fetch only the release branch (faster than full fetch) with timeout
             signals.status_message.emit("Fetching from remote...")
             if cancel_event.is_set():
                 signals.finished.emit(False, "Update cancelled.")
                 return
             try:
-                repo.remote().fetch()
+                # Fetch only latest commit (depth=1) for faster update
+                subprocess.run(
+                    ["git", "fetch", "origin", release_branch, "--depth=1"],
+                    cwd=script_dir,
+                    timeout=60,
+                    capture_output=True,
+                    check=True,
+                    text=True,
+                )
+                signals.log_line.emit("Fetch completed (latest only).")
+            except subprocess.TimeoutExpired:
+                signals.log_line.emit("ERROR (fetch): Timeout after 60 seconds.")
+                signals.finished.emit(False, "Fetch timed out. Check network and try again.")
+                return
+            except subprocess.CalledProcessError as e:
+                err = (e.stderr or e.stdout or "").strip() or "Fetch failed."
+                signals.log_line.emit(f"ERROR (fetch): {err}")
+                signals.finished.emit(False, f"Fetch failed: {err}")
+                return
             except Exception as e:
                 logger.exception("Git fetch failed")
                 err = str(e).strip() or "Network or permission error."
+                signals.log_line.emit(f"ERROR (fetch): {err}")
                 signals.finished.emit(False, f"Fetch failed: {err}")
                 return
 
-            release_branch = f"Release/{target_version}"
             signals.status_message.emit(f"Checking out {release_branch}...")
             if cancel_event.is_set():
                 signals.finished.emit(False, "Update cancelled.")
@@ -1211,11 +1387,14 @@ class AWSIoTPubSubGUI(QMainWindow):
 
             try:
                 repo.git.checkout(release_branch)
+                signals.log_line.emit(f"Checkout: {release_branch}.")
             except Exception:
                 try:
                     repo.git.checkout("-b", release_branch, f"origin/{release_branch}")
+                    signals.log_line.emit(f"Checkout (new branch): {release_branch}.")
                 except Exception as e:
                     logger.exception("Git checkout failed")
+                    signals.log_line.emit(f"ERROR (checkout): {e}")
                     signals.finished.emit(False, f"Checkout failed: {e}")
                     return
 
@@ -1225,16 +1404,48 @@ class AWSIoTPubSubGUI(QMainWindow):
                 return
 
             try:
-                repo.git.pull("origin", release_branch)
-            except Exception:
+                # Pull only latest commit (depth=1) for faster update
+                subprocess.run(
+                    ["git", "pull", "origin", release_branch, "--depth=1"],
+                    cwd=script_dir,
+                    timeout=90,
+                    capture_output=True,
+                    check=True,
+                    text=True,
+                )
+                signals.log_line.emit("Pull completed (latest only).")
+            except subprocess.TimeoutExpired:
+                signals.log_line.emit("ERROR (pull): Timeout after 90 seconds.")
+                signals.finished.emit(False, "Pull timed out. Check network and try again.")
+                return
+            except subprocess.CalledProcessError:
                 try:
-                    repo.git.reset("--hard", f"origin/{release_branch}")
-                except Exception as e:
-                    logger.exception("Git pull/reset failed")
-                    signals.finished.emit(False, f"Update failed: {e}")
+                    subprocess.run(
+                        ["git", "reset", "--hard", f"origin/{release_branch}"],
+                        cwd=script_dir,
+                        timeout=30,
+                        capture_output=True,
+                        check=True,
+                        text=True,
+                    )
+                    signals.log_line.emit("Reset to origin completed.")
+                except subprocess.TimeoutExpired:
+                    signals.log_line.emit("ERROR (reset): Timeout.")
+                    signals.finished.emit(False, "Update timed out.")
                     return
+                except subprocess.CalledProcessError as e:
+                    err = (e.stderr or e.stdout or "").strip() or str(e)
+                    signals.log_line.emit(f"ERROR (pull/reset): {err}")
+                    signals.finished.emit(False, f"Update failed: {err}")
+                    return
+            except Exception as e:
+                logger.exception("Git pull failed")
+                signals.log_line.emit(f"ERROR (pull): {e}")
+                signals.finished.emit(False, f"Update failed: {e}")
+                return
 
             logger.info("In-app update completed successfully")
+            signals.log_line.emit("Update completed successfully.")
             self.update_checker.log_message.emit("Update completed. Restart the application to apply changes.")
             signals.finished.emit(
                 True,
@@ -1242,7 +1453,12 @@ class AWSIoTPubSubGUI(QMainWindow):
             )
         except Exception as e:
             logger.exception("Update failed")
-            signals.finished.emit(False, f"Update failed: {e}")
+            err_msg = str(e).strip() or type(e).__name__
+            signals.log_line.emit(f"ERROR: {err_msg}")
+            for line in traceback.format_exc().splitlines()[-5:]:
+                if line.strip():
+                    signals.log_line.emit(f"  {line.strip()}")
+            signals.finished.emit(False, f"Update failed: {err_msg}")
 
     def perform_update(self):
         """Legacy: start in-app update if a new version is available."""
