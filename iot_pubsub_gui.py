@@ -1,15 +1,17 @@
 """
 AWS IoT Pub/Sub GUI Application using PyQt6 and AWS IoT Device SDK v2
 
+This app uses PyQt6 (not Tkinter). It includes in-app self-updating via GitPython,
+fullscreen-by-default, and a one-click installer (install.sh) for Raspberry Pi.
+
 Installation:
-    pip install PyQt6 awsiotsdk
+    pip install -r requirements.txt  # includes PyQt6, awsiotsdk, GitPython
 
 Run:
     python iot_pubsub_gui.py
 
-Test:
-    Use AWS IoT Core MQTT test client to publish to your subscribed topics
-    and see messages appear in the app log in real-time.
+On Raspberry Pi: use install.sh for one-click setup, then run from menu or:
+    cd ~/iot-pubsub-gui && venv/bin/python3 iot_pubsub_gui.py
 """
 
 import sys
@@ -104,7 +106,7 @@ check_dependencies()
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QTextEdit, QPushButton, QGroupBox, QMessageBox,
-    QDialog, QTableWidget, QTableWidgetItem, QHeaderView
+    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QProgressBar
 )
 from PyQt6.QtCore import Qt, QObject, pyqtSignal, QMetaObject, Q_ARG, QThread, QTimer
 from PyQt6.QtGui import QTextCursor, QColor
@@ -118,6 +120,13 @@ try:
     REQUESTS_AVAILABLE = True
 except ImportError:
     REQUESTS_AVAILABLE = False
+
+# Try to import GitPython for in-app git updates (replaces update_service.py)
+try:
+    import git  # type: ignore[import-untyped]
+    GITPYTHON_AVAILABLE = True
+except ImportError:
+    GITPYTHON_AVAILABLE = False
 
 # Version information
 __version__ = "1.0.0"
@@ -155,6 +164,61 @@ class UpdateChecker(QObject):
     update_available = pyqtSignal(str, str)  # latest_sha, local_sha
     check_complete = pyqtSignal(bool)  # success
     log_message = pyqtSignal(str)  # log message from background thread
+
+
+class UpdateProgressSignals(QObject):
+    """Signals for update progress dialog (thread-safe GUI updates during git operations)"""
+    status_message = pyqtSignal(str)
+    finished = pyqtSignal(bool, str)  # success, message
+
+
+class UpdateProgressDialog(QDialog):
+    """
+    Modal dialog shown during in-app update: progress bar, status text, cancel button.
+    Update runs in a background thread; this dialog stays responsive and shows status.
+    """
+    def __init__(self, parent=None, cancel_event=None):
+        super().__init__(parent)
+        self.cancel_event = cancel_event or threading.Event()
+        self.setWindowTitle("Updating Application")
+        self.setModal(True)
+        self.setMinimumWidth(420)
+        layout = QVBoxLayout(self)
+        # Status label
+        self.status_label = QLabel("Preparing...")
+        self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet("font-size: 11pt; padding: 8px;")
+        layout.addWidget(self.status_label)
+        # Indeterminate progress bar
+        self.progress_bar = QProgressBar(self)
+        self.progress_bar.setRange(0, 0)  # indeterminate
+        self.progress_bar.setMinimumHeight(24)
+        layout.addWidget(self.progress_bar)
+        # Cancel button (disabled when update finishes)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self._on_cancel)
+        layout.addWidget(self.cancel_btn)
+        self._finished = False
+
+    def _on_cancel(self):
+        if not self._finished:
+            self.cancel_event.set()
+            self.status_label.setText("Cancelling...")
+            self.cancel_btn.setEnabled(False)
+
+    def set_status(self, text: str):
+        self.status_label.setText(text)
+
+    def set_finished(self, success: bool, message: str):
+        self._finished = True
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(100 if success else 0)
+        self.status_label.setText(message)
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.setText("Close")
+        self.cancel_btn.setEnabled(True)
+        self.cancel_btn.clicked.disconnect()
+        self.cancel_btn.clicked.connect(self.accept)
 
 
 class AWSIoTPubSubGUI(QMainWindow):
@@ -223,6 +287,16 @@ class AWSIoTPubSubGUI(QMainWindow):
         self.version_label = QLabel(f"Version: {__version__}")
         self.version_label.setStyleSheet("font-size: 10pt; color: gray; padding: 5px;")
         top_bar_layout.addWidget(self.version_label)
+
+        # Exit fullscreen button (non-intrusive, right side)
+        self.exit_fullscreen_btn = QPushButton("Exit fullscreen")
+        self.exit_fullscreen_btn.setStyleSheet(
+            "font-size: 9pt; color: gray; padding: 4px 8px; "
+            "background-color: transparent; border: 1px solid #ccc;"
+        )
+        self.exit_fullscreen_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.exit_fullscreen_btn.clicked.connect(self._exit_fullscreen)
+        top_bar_layout.addWidget(self.exit_fullscreen_btn)
         
         # New version available label (clickable, next to version label, initially hidden)
         self.new_version_label = QPushButton()
@@ -347,6 +421,12 @@ class AWSIoTPubSubGUI(QMainWindow):
         
         # Add initial log message
         self.add_log("Application started. Click 'Connect to AWS IoT' to begin.")
+
+    def _exit_fullscreen(self):
+        """Exit fullscreen and show window normal (or maximized)."""
+        if self.isFullScreen():
+            self.showNormal()
+            self.showMaximized()
     
     def update_status(self, message: str, is_success: bool = True):
         """Update the status label with color coding"""
@@ -1014,119 +1094,162 @@ class AWSIoTPubSubGUI(QMainWindow):
         self.add_log(f"Update available! Latest version: {remote_version}, Current version: {local_version}")
     
     def on_new_version_clicked(self):
-        """Handle click on new version label - show confirmation dialog"""
+        """Handle click on new version label - show confirmation then run in-app update with progress dialog."""
         if not self.latest_release_version:
             return
-        
+        if not GITPYTHON_AVAILABLE:
+            QMessageBox.warning(
+                self,
+                "Update Unavailable",
+                "GitPython is not installed. Install it with: pip install gitpython\n\n"
+                "Or update manually from the installation directory using git pull."
+            )
+            return
+
         reply = QMessageBox.question(
             self,
             "Confirm Update",
-            f"A new version ({self.latest_release_version}) is available!\n\n"
+            f"A new version ({self.latest_release_version}) is available.\n\n"
             f"Current version: {self.local_version or __version__}\n\n"
-            f"This will update the application and restart it.\n\n"
-            f"Do you want to continue?",
+            f"The update will run in the background. When finished, restart the application to apply changes.\n\n"
+            f"Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            self.start_update_process()
-    
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self._run_in_app_update(self.latest_release_version)
+
     def on_update_check_complete(self, success: bool):
         """Handle update check completion"""
         if success:
             logger.info("Update check completed")
         else:
             logger.warning("Update check completed with errors")
-    
-    def start_update_process(self):
-        """Start the update process by launching update service and shutting down"""
-        try:
-            logger.info("Starting update process...")
-            self.add_log("=" * 60)
-            self.add_log("Preparing for update...")
-            
-            # Disable update label and show updating status
-            self.new_version_label.setEnabled(False)
-            self.new_version_label.setText("Preparing update...")
-            
-            # Get the target version
-            target_version = self.latest_release_version
-            if not target_version:
-                raise Exception("No target version specified for update")
-            
-            # Find update service script
-            update_service_script = self.script_dir / "update_service.py"
-            if not update_service_script.exists():
-                raise Exception(f"Update service script not found: {update_service_script}")
-            
-            # Get Python executable to run update service
-            venv_python = self._get_venv_python()
-            if not venv_python:
-                venv_python = Path(sys.executable)
-            
-            self.add_log(f"Launching update service for version {target_version}...")
-            logger.info(f"Launching update service: {venv_python} {update_service_script} {target_version} {self.script_dir}")
-            
-            # Launch update service in background
-            if sys.platform == 'win32':
-                # Windows
-                subprocess.Popen(
-                    [str(venv_python), str(update_service_script), target_version, str(self.script_dir)],
-                    cwd=str(self.script_dir),
-                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-                )
-            else:
-                # Linux/Mac
-                subprocess.Popen(
-                    [str(venv_python), str(update_service_script), target_version, str(self.script_dir)],
-                    cwd=str(self.script_dir),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True
-                )
-            
-            self.add_log("Update service launched. Application will now close...")
-            self.add_log("The update service will handle the update and restart.")
-            self.add_log("=" * 60)
-            
-            # Give a moment for the update service to start
-            QTimer.singleShot(500, self.shutdown_application)
-            
-        except Exception as e:
-            error_msg = f"Failed to start update process: {e}"
-            logger.error(error_msg)
-            self.add_log(f"ERROR: {error_msg}")
-            QMessageBox.critical(
-                self,
-                "Update Error",
-                f"Failed to start update process:\n{error_msg}"
+
+    def _run_in_app_update(self, target_version: str):
+        """
+        Run update in background thread with a modal progress dialog.
+        No restart; user is prompted to restart when done.
+        """
+        cancel_event = threading.Event()
+        progress_signals = UpdateProgressSignals()
+        dialog = UpdateProgressDialog(self, cancel_event=cancel_event)
+        progress_signals.status_message.connect(dialog.set_status)
+        progress_signals.finished.connect(dialog.set_finished)
+
+        def worker():
+            self._do_git_update(
+                str(self.script_dir),
+                target_version,
+                progress_signals,
+                cancel_event,
             )
-            if self.latest_release_version:
-                self.new_version_label.setText(f"→ New version {self.latest_release_version} available (click to upgrade)")
-            self.new_version_label.setEnabled(True)
-    
-    def shutdown_application(self):
-        """Shutdown the application gracefully"""
+
+        self.new_version_label.setEnabled(False)
+        self.new_version_label.setText("Updating...")
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        dialog.exec()
+        # Re-enable label and restore text if update was cancelled or failed
+        self.new_version_label.setText(f"→ New version {self.latest_release_version} available (click to upgrade)")
+        self.new_version_label.setEnabled(True)
+
+    def _do_git_update(
+        self,
+        script_dir: str,
+        target_version: str,
+        signals: UpdateProgressSignals,
+        cancel_event: threading.Event,
+    ):
+        """
+        Perform git fetch, checkout Release/<target_version>, and pull.
+        In-app update always pulls from the latest Release branch (not main).
+        Runs in background thread. Emits status_message and finished on signals.
+        """
         try:
-            logger.info("Shutting down application for update...")
-            self.add_log("Shutting down application...")
-            
-            # Disconnect from IoT if connected
-            if self.is_connected:
-                self.disconnect_from_iot()
-            
-            # Close the application
-            QApplication.instance().quit()
-            
+            signals.status_message.emit("Checking repository...")
+            if cancel_event.is_set():
+                signals.finished.emit(False, "Update cancelled.")
+                return
+
+            if not GITPYTHON_AVAILABLE:
+                signals.finished.emit(False, "GitPython not installed. Run: pip install gitpython")
+                return
+
+            repo = git.Repo(script_dir)
+            if repo.bare:
+                signals.finished.emit(False, "Not a git repository (bare).")
+                return
+
+            if repo.is_dirty():
+                signals.finished.emit(
+                    False,
+                    "Uncommitted local changes detected. Commit or stash them before updating.",
+                )
+                return
+
+            signals.status_message.emit("Fetching from remote...")
+            if cancel_event.is_set():
+                signals.finished.emit(False, "Update cancelled.")
+                return
+            try:
+                repo.remote().fetch()
+            except Exception as e:
+                logger.exception("Git fetch failed")
+                err = str(e).strip() or "Network or permission error."
+                signals.finished.emit(False, f"Fetch failed: {err}")
+                return
+
+            release_branch = f"Release/{target_version}"
+            signals.status_message.emit(f"Checking out {release_branch}...")
+            if cancel_event.is_set():
+                signals.finished.emit(False, "Update cancelled.")
+                return
+
+            try:
+                repo.git.checkout(release_branch)
+            except Exception:
+                try:
+                    repo.git.checkout("-b", release_branch, f"origin/{release_branch}")
+                except Exception as e:
+                    logger.exception("Git checkout failed")
+                    signals.finished.emit(False, f"Checkout failed: {e}")
+                    return
+
+            signals.status_message.emit("Applying updates...")
+            if cancel_event.is_set():
+                signals.finished.emit(False, "Update cancelled.")
+                return
+
+            try:
+                repo.git.pull("origin", release_branch)
+            except Exception:
+                try:
+                    repo.git.reset("--hard", f"origin/{release_branch}")
+                except Exception as e:
+                    logger.exception("Git pull/reset failed")
+                    signals.finished.emit(False, f"Update failed: {e}")
+                    return
+
+            logger.info("In-app update completed successfully")
+            self.update_checker.log_message.emit("Update completed. Restart the application to apply changes.")
+            signals.finished.emit(
+                True,
+                "Update complete. Restart the application to apply changes.",
+            )
         except Exception as e:
-            logger.error(f"Error during shutdown: {e}")
-            # Force quit if graceful shutdown fails
-            QApplication.instance().quit()
-    
+            logger.exception("Update failed")
+            signals.finished.emit(False, f"Update failed: {e}")
+
     def perform_update(self):
-        """Legacy method - kept for backward compatibility but redirects to start_update_process"""
-        self.start_update_process()
+        """Legacy: start in-app update if a new version is available."""
+        if self.latest_release_version:
+            self.on_new_version_clicked()
+        else:
+            self.add_log("No update available.")
     
     def closeEvent(self, event):
         """Handle window close event"""
@@ -1139,10 +1262,12 @@ def main():
     """Main entry point"""
     app = QApplication(sys.argv)
     app.setStyle('Fusion')  # Modern look
-    
+
     window = AWSIoTPubSubGUI()
     window.show()
-    
+    # Launch in fullscreen by default (Raspberry Pi kiosk-style)
+    window.showFullScreen()
+
     sys.exit(app.exec())
 
 

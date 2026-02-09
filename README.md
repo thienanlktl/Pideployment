@@ -1,54 +1,58 @@
 # IoT PubSub GUI
 
-AWS IoT Pub/Sub GUI Application using PyQt6 and AWS IoT Device SDK v2.
+AWS IoT Pub/Sub GUI Application using PyQt6 and AWS IoT Device SDK v2. Designed for Raspberry Pi with fullscreen-by-default, in-app self-updating, and a one-click installer.
 
-## Quick Start
+## Quick Start – One-Click Install (Raspberry Pi)
 
-### First-Time Installation on New Raspberry Pi
+Use **install.sh** for a brand-new Raspberry Pi (idempotent; safe to run multiple times).
 
-**For new Raspberry Pi without git access**, use the standalone installer:
-
-1. Download the standalone installer:
+1. Download and run the installer:
    ```bash
-   wget https://raw.githubusercontent.com/thienanlktl/Pideployment/main/install-iot-pubsub-gui-standalone.sh
+   wget https://raw.githubusercontent.com/yourusername/iot-project/main/install.sh
+   chmod +x install.sh
+   bash install.sh
    ```
+   Replace `yourusername/iot-project` with your actual GitHub repo if you use a different URL.
 
-2. Run the installer:
-   ```bash
-   chmod +x install-iot-pubsub-gui-standalone.sh
-   bash install-iot-pubsub-gui-standalone.sh
-   ```
+2. The script will:
+   - Install required system packages (git, Python 3, venv, pip, build tools, SQLite, optional Qt/OpenGL for GUI)
+   - Verify git access to the repo (fails with clear instructions if credentials are missing)
+   - Clone the repository (or update it if already present)
+   - Create a virtual environment and install Python dependencies from `requirements.txt`
+   - Create a desktop icon and menu shortcut
+   - Optionally enable auto-start on login
 
-**For Raspberry Pi with git access**, use the git-based installer:
+3. Launch the app:
+   - From the application menu: **IoT PubSub GUI**, or
+   - From terminal: `cd ~/iot-pubsub-gui && venv/bin/python3 iot_pubsub_gui.py`
 
-1. Download the installer:
-   ```bash
-   wget https://raw.githubusercontent.com/thienanlktl/Pideployment/main/install-iot-pubsub-gui.sh
-   ```
+**Custom install directory or repo URL:**
+```bash
+IOT_INSTALL_DIR=$HOME/my-iot-app IOT_REPO_URL=https://github.com/you/your-repo.git bash install.sh
+```
 
-2. Run the installer:
-   ```bash
-   chmod +x install-iot-pubsub-gui.sh
-   bash install-iot-pubsub-gui.sh
-   ```
+**Private repo (full credentials required on fresh Pi):**  
+The installer verifies git access before cloning. For a **private** repository you must set up credentials first:
 
-3. Launch the application:
-   - Double-click the "IoT PubSub GUI" icon on your desktop, or
-   - Run from terminal:
-     ```bash
-     cd ~/iot-pubsub-gui
-     source venv/bin/activate
-     python3 iot_pubsub_gui.py
-     ```
+- **SSH (recommended):** Generate a key on the Pi (`ssh-keygen -t ed25519 -C "pi@iot"`), add the public key to GitHub/GitLab, then run with an SSH URL:
+  ```bash
+  IOT_REPO_URL="git@github.com:USER/REPO.git" bash install.sh
+  ```
+  Test SSH first: `ssh -T git@github.com`
+- **HTTPS:** Use a Personal Access Token as the password when git prompts you, or run `git config --global credential.helper store` once, then run the installer.
 
-**See [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) for detailed deployment instructions.**
+If the script reports "Cannot access repository", fix SSH/HTTPS access and run it again.
+
+**See [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) for more options (standalone installer, git-based installer).**
 
 ## Features
 
 - **MQTT Pub/Sub**: Publish and subscribe to AWS IoT Core topics
 - **Real-time Message Log**: View received messages in real-time
 - **SQLite Database**: All messages are stored in a local database
-- **Auto-Update Check**: Application checks for updates on startup
+- **In-app self-update**: Check and apply updates via GitPython (no separate update script); progress dialog and cancel support
+- **Fullscreen by default**: Kiosk-style on Raspberry Pi; "Exit fullscreen" button to minimize
+- **One-click installer**: `install.sh` for new Raspberry Pi devices
 
 ## Requirements
 
@@ -71,41 +75,37 @@ These files should be placed in `~/iot-pubsub-gui/` directory.
 
 ```
 iot-pubsub-gui/
-├── iot_pubsub_gui.py          # Main application
-├── requirements.txt            # Python dependencies
-├── VERSION                     # Version file
-├── install-iot-pubsub-gui.sh           # Git-based installer
-├── install-iot-pubsub-gui-standalone.sh # Standalone installer (for new Pi)
-├── iot-pubsub-gui.desktop      # Desktop launcher
-├── venv/                       # Virtual environment (created by installer)
-├── .git/                       # Git repository (for auto-updates)
-├── *.pem                       # AWS IoT certificates
-└── iot_messages.db             # SQLite database (created at runtime)
+├── iot_pubsub_gui.py          # Main application (PyQt6; includes in-app update + fullscreen)
+├── requirements.txt           # Python dependencies (includes GitPython)
+├── VERSION                    # Version file
+├── install.sh                 # One-click installer for new Raspberry Pi
+├── install-iot-pubsub-gui.sh  # Alternative git-based installer
+├── iot-pubsub-gui.desktop     # Desktop launcher (created by install.sh)
+├── venv/                      # Virtual environment (created by installer)
+├── .git/                      # Git repository (for in-app updates)
+├── *.pem                      # AWS IoT certificates
+└── iot_messages.db            # SQLite database (created at runtime)
 ```
 
-## Auto-Update
+## In-App Self-Update
 
-The application automatically checks for updates on startup by comparing the local git commit SHA with the latest commit on GitHub. If an update is available, a notification will appear in the top-right corner of the GUI.
+The application checks for updates on startup (Release/* branches). If a newer version is available, a link appears in the top bar.
 
 **How it works:**
-- Both installers automatically set up a git repository in the installation directory
-- On startup, the app checks GitHub for newer commits
-- If an update is available, click "Update Now" to upgrade
-- The app will fetch latest code, update dependencies, and restart automatically
+- Uses **GitPython** inside the app (no external `update_service.py`).
+- Update runs in a **background thread**; the GUI stays responsive.
+- A **progress dialog** shows status (e.g. "Fetching...", "Applying updates...") with an indeterminate progress bar and a **Cancel** button.
+- When done, you see a message: **"Restart the application to apply changes"** (restart is not forced).
+- Handles dirty working tree, no internet, and permission errors with clear messages.
 
-**Requirements:**
-- Git must be installed (automatically installed by both installers)
-- Internet connection must be available
-- Installation directory must be a git repository (automatically configured)
+**Requirements:** GitPython (`pip install gitpython`), git installed on the system, and the install directory must be a git clone.
 
-**To update manually:**
+**Manual update (without using the in-app button):**
 ```bash
 cd ~/iot-pubsub-gui
-source venv/bin/activate
-git fetch origin
-git reset --hard origin/main
-pip install -r requirements.txt --upgrade
-python3 iot_pubsub_gui.py
+git fetch origin && git pull  # or checkout a specific Release/X branch
+venv/bin/pip install -r requirements.txt --upgrade
+# Restart the application
 ```
 
 ## Manual Installation
@@ -129,6 +129,11 @@ python3 iot_pubsub_gui.py
 ```
 
 ## Troubleshooting
+
+### install.sh: `$'\r': command not found` or `syntax error near unexpected token`
+- The script has Windows line endings (CRLF). On the Pi, fix it once:  
+  `sed -i 's/\r$//' install.sh`  
+  Then run `bash install.sh` again. The repo uses `.gitattributes` so `*.sh` are stored with LF; if you copied the file from Windows, the `sed` command fixes it.
 
 ### Application won't start
 - Ensure you're running on a system with a desktop environment
