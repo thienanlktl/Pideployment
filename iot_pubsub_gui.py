@@ -1302,6 +1302,20 @@ class AWSIoTPubSubGUI(QMainWindow):
         self.new_version_label.setText(f"→ New version {self.latest_release_version} available (click to upgrade)")
         self.new_version_label.setEnabled(True)
 
+    def _get_git_env_with_ssh(self):
+        """Build env with GIT_SSH_COMMAND so git uses SSH key from ~/.ssh (avoids permission denied)."""
+        env = os.environ.copy()
+        ssh_dir = Path.home() / ".ssh"
+        key_file = None
+        if (ssh_dir / "id_ed25519").exists():
+            key_file = ssh_dir / "id_ed25519"
+        elif (ssh_dir / "id_rsa").exists():
+            key_file = ssh_dir / "id_rsa"
+        if key_file:
+            key_path = str(key_file.resolve())
+            env["GIT_SSH_COMMAND"] = f"ssh -i '{key_path}' -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+        return env
+
     def _do_git_update(
         self,
         script_dir: str,
@@ -1311,7 +1325,7 @@ class AWSIoTPubSubGUI(QMainWindow):
     ):
         """
         Perform git fetch, checkout Release/<target_version>, and pull.
-        In-app update always pulls from the latest Release branch (not main).
+        Uses SSH key from ~/.ssh to avoid permission denied. In-app update pulls from latest Release branch.
         Runs in background thread. Emits status_message and finished on signals.
         """
         try:
@@ -1319,6 +1333,10 @@ class AWSIoTPubSubGUI(QMainWindow):
             if cancel_event.is_set():
                 signals.finished.emit(False, "Update cancelled.")
                 return
+
+            git_env = self._get_git_env_with_ssh()
+            if "GIT_SSH_COMMAND" in git_env:
+                signals.log_line.emit("Using SSH key from ~/.ssh for fetch/pull.")
 
             if not GITPYTHON_AVAILABLE:
                 signals.log_line.emit("ERROR: GitPython not installed.")
@@ -1371,6 +1389,24 @@ class AWSIoTPubSubGUI(QMainWindow):
 
             signals.log_line.emit("Repository OK.")
 
+            # Use SSH remote so GIT_SSH_COMMAND (and SSH key) is used; avoid permission denied
+            try:
+                origin_url = repo.remotes.origin.url
+                if origin_url.startswith("https://github.com/"):
+                    path = origin_url.replace("https://github.com/", "").strip("/").replace(".git", "")
+                    ssh_url = f"git@github.com:{path}.git"
+                    if ssh_url != origin_url:
+                        repo.remotes.origin.set_url(ssh_url)
+                        signals.log_line.emit(f"Using SSH remote for update: {ssh_url}")
+                elif origin_url.startswith("https://gitlab.com/"):
+                    path = origin_url.replace("https://gitlab.com/", "").strip("/").replace(".git", "")
+                    ssh_url = f"git@gitlab.com:{path}.git"
+                    if ssh_url != origin_url:
+                        repo.remotes.origin.set_url(ssh_url)
+                        signals.log_line.emit(f"Using SSH remote for update: {ssh_url}")
+            except Exception as e:
+                signals.log_line.emit(f"Note: Could not switch to SSH remote: {e}")
+
             release_branch = f"Release/{target_version}"
             # Fetch only the release branch (faster than full fetch) with timeout
             signals.status_message.emit("Fetching from remote...")
@@ -1378,7 +1414,7 @@ class AWSIoTPubSubGUI(QMainWindow):
                 signals.finished.emit(False, "Update cancelled.")
                 return
             try:
-                # Fetch only latest commit (depth=1) for faster update
+                # Fetch only latest commit (depth=1); use SSH key to avoid permission denied
                 subprocess.run(
                     ["git", "fetch", "origin", release_branch, "--depth=1"],
                     cwd=script_dir,
@@ -1386,6 +1422,7 @@ class AWSIoTPubSubGUI(QMainWindow):
                     capture_output=True,
                     check=True,
                     text=True,
+                    env=git_env,
                 )
                 signals.log_line.emit("Fetch completed (latest only).")
             except subprocess.TimeoutExpired:
@@ -1395,6 +1432,8 @@ class AWSIoTPubSubGUI(QMainWindow):
             except subprocess.CalledProcessError as e:
                 err = (e.stderr or e.stdout or "").strip() or "Fetch failed."
                 signals.log_line.emit(f"ERROR (fetch): {err}")
+                if "permission denied" in err.lower() or "access denied" in err.lower() or "publickey" in err.lower():
+                    signals.log_line.emit("Tip: Ensure SSH key is in ~/.ssh (id_ed25519 or id_rsa) and public key is added to GitHub/GitLab. Remote should use SSH URL (git@github.com:...).")
                 signals.finished.emit(False, f"Fetch failed: {err}")
                 return
             except Exception as e:
@@ -1428,7 +1467,7 @@ class AWSIoTPubSubGUI(QMainWindow):
                 return
 
             try:
-                # Pull only latest commit (depth=1) for faster update
+                # Pull only latest commit (depth=1); use SSH key to avoid permission denied
                 subprocess.run(
                     ["git", "pull", "origin", release_branch, "--depth=1"],
                     cwd=script_dir,
@@ -1436,13 +1475,17 @@ class AWSIoTPubSubGUI(QMainWindow):
                     capture_output=True,
                     check=True,
                     text=True,
+                    env=git_env,
                 )
                 signals.log_line.emit("Pull completed (latest only).")
             except subprocess.TimeoutExpired:
                 signals.log_line.emit("ERROR (pull): Timeout after 90 seconds.")
                 signals.finished.emit(False, "Pull timed out. Check network and try again.")
                 return
-            except subprocess.CalledProcessError:
+            except subprocess.CalledProcessError as e:
+                err = (e.stderr or e.stdout or "").strip()
+                if "permission denied" in err.lower() or "access denied" in err.lower() or "publickey" in err.lower():
+                    signals.log_line.emit("Tip: Use SSH key in ~/.ssh and add public key to GitHub/GitLab. Set remote: git remote set-url origin git@github.com:user/repo.git")
                 try:
                     subprocess.run(
                         ["git", "reset", "--hard", f"origin/{release_branch}"],
@@ -1451,6 +1494,7 @@ class AWSIoTPubSubGUI(QMainWindow):
                         capture_output=True,
                         check=True,
                         text=True,
+                        env=git_env,
                     )
                     signals.log_line.emit("Reset to origin completed.")
                 except subprocess.TimeoutExpired:
