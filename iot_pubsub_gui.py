@@ -1337,13 +1337,37 @@ class AWSIoTPubSubGUI(QMainWindow):
                 signals.finished.emit(False, "Not a git repository (bare).")
                 return
 
+            # Force undo uncommitted changes so we can pull latest
             if repo.is_dirty():
-                signals.log_line.emit("ERROR: Working tree has uncommitted changes.")
-                signals.finished.emit(
-                    False,
-                    "Uncommitted local changes detected. Commit or stash them before updating.",
-                )
-                return
+                signals.status_message.emit("Discarding local changes...")
+                signals.log_line.emit("Local uncommitted changes detected; discarding to pull latest.")
+                try:
+                    subprocess.run(
+                        ["git", "reset", "--hard", "HEAD"],
+                        cwd=script_dir,
+                        timeout=15,
+                        capture_output=True,
+                        check=True,
+                        text=True,
+                    )
+                    signals.log_line.emit("Reset uncommitted changes done.")
+                    subprocess.run(
+                        ["git", "clean", "-fd"],
+                        cwd=script_dir,
+                        timeout=15,
+                        capture_output=True,
+                        text=True,
+                    )
+                    signals.log_line.emit("Clean untracked files done.")
+                except subprocess.TimeoutExpired:
+                    signals.log_line.emit("ERROR: Timeout discarding local changes.")
+                    signals.finished.emit(False, "Could not discard local changes (timeout).")
+                    return
+                except subprocess.CalledProcessError as e:
+                    err = (e.stderr or e.stdout or "").strip() or str(e)
+                    signals.log_line.emit(f"ERROR (reset): {err}")
+                    signals.finished.emit(False, f"Could not discard local changes: {err}")
+                    return
 
             signals.log_line.emit("Repository OK.")
 
