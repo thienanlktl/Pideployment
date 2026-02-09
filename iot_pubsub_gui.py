@@ -109,7 +109,7 @@ from PyQt6.QtWidgets import (
     QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QProgressBar,
     QFrame, QScrollArea, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QObject, pyqtSignal, QMetaObject, Q_ARG, QThread, QTimer
+from PyQt6.QtCore import Qt, QObject, pyqtSignal, QMetaObject, Q_ARG, QThread, QTimer, QEvent
 from PyQt6.QtGui import QTextCursor, QColor
 
 from awscrt import mqtt
@@ -344,15 +344,15 @@ class AWSIoTPubSubGUI(QMainWindow):
         self.version_label.setStyleSheet("font-size: 10pt; color: gray; padding: 5px;")
         top_bar_layout.addWidget(self.version_label)
 
-        # Exit fullscreen button (non-intrusive, right side)
-        self.exit_fullscreen_btn = QPushButton("Exit fullscreen")
-        self.exit_fullscreen_btn.setStyleSheet(
+        # Full screen toggle (always visible: "Full screen" when windowed, "Exit fullscreen" when full screen)
+        self.fullscreen_btn = QPushButton("Full screen")
+        self.fullscreen_btn.setStyleSheet(
             "font-size: 9pt; color: gray; padding: 4px 8px; "
             "background-color: transparent; border: 1px solid #ccc;"
         )
-        self.exit_fullscreen_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.exit_fullscreen_btn.clicked.connect(self._exit_fullscreen)
-        top_bar_layout.addWidget(self.exit_fullscreen_btn)
+        self.fullscreen_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.fullscreen_btn.clicked.connect(self._toggle_fullscreen)
+        top_bar_layout.addWidget(self.fullscreen_btn)
         
         # New version available label (clickable, next to version label, initially hidden)
         self.new_version_label = QPushButton()
@@ -478,11 +478,22 @@ class AWSIoTPubSubGUI(QMainWindow):
         # Add initial log message
         self.add_log("Application started. Click 'Connect to AWS IoT' to begin.")
 
+    def _toggle_fullscreen(self):
+        """Toggle between full screen and windowed (maximized)."""
+        if self.isFullScreen():
+            self.showNormal()
+            self.showMaximized()
+            self.fullscreen_btn.setText("Full screen")
+        else:
+            self.showFullScreen()
+            self.fullscreen_btn.setText("Exit fullscreen")
+
     def _exit_fullscreen(self):
         """Exit fullscreen and show window normal (or maximized)."""
         if self.isFullScreen():
             self.showNormal()
             self.showMaximized()
+            self.fullscreen_btn.setText("Full screen")
     
     def update_status(self, message: str, is_success: bool = True):
         """Update the status label with color coding"""
@@ -1207,7 +1218,7 @@ class AWSIoTPubSubGUI(QMainWindow):
         else:
             kwargs["start_new_session"] = True
         try:
-            subprocess.Popen([str(python_exe), str(script)], **kwargs)
+            subprocess.Popen([str(python_exe), str(script), "--fullscreen"], **kwargs)
         except Exception as e:
             logger.exception("Failed to restart application: %s", e)
             QMessageBox.warning(
@@ -1508,6 +1519,12 @@ class AWSIoTPubSubGUI(QMainWindow):
         else:
             self.add_log("No update available.")
     
+    def changeEvent(self, event):
+        """Update full screen button text when window state changes (e.g. after showFullScreen() at startup)."""
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange and hasattr(self, "fullscreen_btn"):
+            self.fullscreen_btn.setText("Exit fullscreen" if self.isFullScreen() else "Full screen")
+
     def closeEvent(self, event):
         """Handle window close event"""
         if self.is_connected:
@@ -1522,8 +1539,11 @@ def main():
 
     window = AWSIoTPubSubGUI()
     window.show()
-    # Launch in fullscreen by default (Raspberry Pi kiosk-style)
-    window.showFullScreen()
+    # Full screen by default; use --no-fullscreen to start windowed. Restart after update passes --fullscreen.
+    use_fullscreen = "--no-fullscreen" not in sys.argv
+    if use_fullscreen:
+        # Delay so the window is mapped first; ensures full screen applies reliably after restart
+        QTimer.singleShot(100, window.showFullScreen)
 
     sys.exit(app.exec())
 
