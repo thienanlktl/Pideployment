@@ -1303,18 +1303,41 @@ class AWSIoTPubSubGUI(QMainWindow):
         self.new_version_label.setEnabled(True)
 
     def _get_git_env_with_ssh(self):
-        """Build env with GIT_SSH_COMMAND so git uses SSH key from ~/.ssh (avoids permission denied)."""
+        """
+        Build env with GIT_SSH_COMMAND using the same .ssh folder and key as install.sh / pull.
+        Uses IOT_SSH_DIR (default ~/.ssh), IOT_SSH_KEY if set, else id_ed25519, id_rsa, id_ecdsa,
+        or any file in the folder containing PRIVATE KEY (no subfolders).
+        """
         env = os.environ.copy()
-        ssh_dir = Path.home() / ".ssh"
+        ssh_dir = Path(os.environ.get("IOT_SSH_DIR", "")) or (Path.home() / ".ssh")
         key_file = None
-        if (ssh_dir / "id_ed25519").exists():
-            key_file = ssh_dir / "id_ed25519"
-        elif (ssh_dir / "id_rsa").exists():
-            key_file = ssh_dir / "id_rsa"
+        if os.environ.get("IOT_SSH_KEY"):
+            k = Path(os.environ["IOT_SSH_KEY"]).expanduser().resolve()
+            if k.is_file():
+                key_file = k
+        if not key_file and ssh_dir.is_dir():
+            for name in ("id_ed25519", "id_rsa", "id_ecdsa"):
+                p = ssh_dir / name
+                if p.is_file():
+                    key_file = p
+                    break
+            if not key_file:
+                for f in ssh_dir.iterdir():
+                    if not f.is_file():
+                        continue
+                    if f.suffix == ".pub" or f.name in ("config", "known_hosts", "authorized_keys"):
+                        continue
+                    try:
+                        if "PRIVATE KEY" in f.read_text(encoding="utf-8", errors="ignore"):
+                            key_file = f
+                            break
+                    except Exception:
+                        continue
         if key_file:
             key_path = str(key_file.resolve())
             env["GIT_SSH_COMMAND"] = f"ssh -i '{key_path}' -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
-        return env
+            return env, key_path
+        return env, None
 
     def _do_git_update(
         self,
@@ -1334,9 +1357,9 @@ class AWSIoTPubSubGUI(QMainWindow):
                 signals.finished.emit(False, "Update cancelled.")
                 return
 
-            git_env = self._get_git_env_with_ssh()
-            if "GIT_SSH_COMMAND" in git_env:
-                signals.log_line.emit("Using SSH key from ~/.ssh for fetch/pull.")
+            git_env, ssh_key_path = self._get_git_env_with_ssh()
+            if ssh_key_path:
+                signals.log_line.emit(f"Using same SSH key as pull: {ssh_key_path}")
 
             if not GITPYTHON_AVAILABLE:
                 signals.log_line.emit("ERROR: GitPython not installed.")
