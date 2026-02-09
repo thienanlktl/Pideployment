@@ -1304,12 +1304,15 @@ class AWSIoTPubSubGUI(QMainWindow):
 
     def _get_git_env_with_ssh(self):
         """
-        Build env with GIT_SSH_COMMAND using the same .ssh folder and key as install.sh / pull.
-        Uses IOT_SSH_DIR (default ~/.ssh), IOT_SSH_KEY if set, else id_ed25519, id_rsa, id_ecdsa,
-        or any file in the folder containing PRIVATE KEY (no subfolders).
+        Find .ssh in the current user's home directory: home/{user}/.ssh (e.g. /home/pi/.ssh).
+        Use public/private key from that folder only; never from the iot pubsub app folder.
+        IOT_SSH_DIR overrides the path; else id_ed25519, id_rsa, id_ecdsa or any PRIVATE KEY file.
         """
         env = os.environ.copy()
-        ssh_dir = Path(os.environ.get("IOT_SSH_DIR", "")) or (Path.home() / ".ssh")
+        # home/{user}/.ssh — current user's home directory (e.g. /home/pi/.ssh on Pi)
+        user_home = Path.home()
+        default_ssh = user_home / ".ssh"
+        ssh_dir = Path(os.environ["IOT_SSH_DIR"]).expanduser().resolve() if os.environ.get("IOT_SSH_DIR") else default_ssh
         key_file = None
         if os.environ.get("IOT_SSH_KEY"):
             k = Path(os.environ["IOT_SSH_KEY"]).expanduser().resolve()
@@ -1359,7 +1362,7 @@ class AWSIoTPubSubGUI(QMainWindow):
 
             git_env, ssh_key_path = self._get_git_env_with_ssh()
             if ssh_key_path:
-                signals.log_line.emit(f"Using same SSH key as pull: {ssh_key_path}")
+                signals.log_line.emit(f"Using SSH key from user home .ssh: {ssh_key_path}")
 
             if not GITPYTHON_AVAILABLE:
                 signals.log_line.emit("ERROR: GitPython not installed.")
