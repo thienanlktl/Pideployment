@@ -1309,7 +1309,8 @@ class AWSIoTPubSubGUI(QMainWindow):
     ):
         """
         Fetch Release/<target_version> and update only iot_pubsub_gui.py and VERSION.
-        Does not change branch, reset, or clean; other files (e.g. desktop launcher) are left unchanged.
+        No clean, no remove, no reset, no branch change - only these two files are replaced.
+        All other files (desktop launcher, install.sh, etc.) are left unchanged.
         Uses SSH key from ~/.ssh. Runs in background thread. Emits status_message and finished on signals.
         """
         try:
@@ -1339,7 +1340,7 @@ class AWSIoTPubSubGUI(QMainWindow):
                 signals.finished.emit(False, "Not a git repository (bare).")
                 return
 
-            signals.log_line.emit("Repository OK. Update will replace only iot_pubsub_gui.py and VERSION.")
+            signals.log_line.emit("Repository OK. No clean/remove/reset - only iot_pubsub_gui.py and VERSION will be updated.")
 
             # Use SSH remote so GIT_SSH_COMMAND (and SSH key) is used; avoid permission denied
             try:
@@ -1395,9 +1396,10 @@ class AWSIoTPubSubGUI(QMainWindow):
                 signals.finished.emit(False, f"Fetch failed: {err}")
                 return
 
-            # Update only iot_pubsub_gui.py and VERSION from the Release branch (no full pull/reset/clean)
+            # Update only these two files from the Release branch (no pull, no reset, no clean)
             ref = f"origin/{release_branch}"
             signals.status_message.emit("Updating iot_pubsub_gui.py and VERSION...")
+            signals.log_line.emit("Checking out latest iot_pubsub_gui.py and VERSION only (no other changes).")
             if cancel_event.is_set():
                 signals.finished.emit(False, "Update cancelled.")
                 return

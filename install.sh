@@ -276,10 +276,20 @@ EOF
 sed -i 's/\r$//' "$DESKTOP_FILE" 2>/dev/null || true
 ok "Desktop/menu entry created: $DESKTOP_FILE"
 
-# Mark as trusted so it launches without "This file seems to be an executable script" confirmation
-if command -v gio &>/dev/null; then
-    gio set "$DESKTOP_FILE" metadata::trusted true 2>/dev/null && ok "Launcher marked trusted" || true
-fi
+# Mark as trusted so it launches without "Run?" / "executable script" confirmation (Raspberry Pi OS / PCManFM)
+# Try normal gio first; if no D-Bus session (e.g. SSH), try with session bus so it sticks for the desktop
+_set_desktop_trusted() {
+    local f="$1"
+    [ -z "$f" ] || [ ! -f "$f" ] && return 1
+    if ! command -v gio &>/dev/null; then return 1; fi
+    if gio set "$f" metadata::trusted true 2>/dev/null; then return 0; fi
+    local uid bus
+    uid=$(id -u 2>/dev/null) || return 1
+    bus="/run/user/$uid/bus"
+    [ -S "$bus" ] && DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" DISPLAY="${DISPLAY:-:0}" gio set "$f" metadata::trusted true 2>/dev/null && return 0
+    return 1
+}
+if _set_desktop_trusted "$DESKTOP_FILE"; then ok "Launcher marked trusted (no confirmation on run)"; fi
 
 # One-time helper: at next graphical login, set trust on Desktop copy (fixes SSH installs). Runs once then removes itself.
 # Store outside install dir so in-app update (git clean) does not remove it.
@@ -290,6 +300,10 @@ TRUST_ONCE_AUTOSTART="$HOME/.config/autostart/iot-pubsub-gui-trust-once.desktop"
 cat > "$TRUST_ONCE_SCRIPT" << 'TRUSTSCRIPT'
 #!/bin/bash
 sleep 3
+# Use session bus so gio sets trust in the same session as the desktop (no "Run?" prompt)
+bus="/run/user/$(id -u)/bus"
+[ -S "$bus" ] && export DBUS_SESSION_BUS_ADDRESS="unix:path=$bus"
+[ -z "$DISPLAY" ] && export DISPLAY=:0
 gio set "$HOME/.local/share/applications/iot-pubsub-gui.desktop" metadata::trusted true 2>/dev/null
 gio set "$HOME/Desktop/iot-pubsub-gui.desktop" metadata::trusted true 2>/dev/null
 rm -f "$HOME/.config/autostart/iot-pubsub-gui-trust-once.desktop"
@@ -315,9 +329,7 @@ if [ -d "$HOME/Desktop" ]; then
     cp "$DESKTOP_FILE" "$DESKTOP_ICON"
     chmod +x "$DESKTOP_ICON"
     sed -i 's/\r$//' "$DESKTOP_ICON" 2>/dev/null || true
-    if command -v gio &>/dev/null; then
-        gio set "$DESKTOP_ICON" metadata::trusted true 2>/dev/null && ok "Desktop icon trusted" || true
-    fi
+    if _set_desktop_trusted "$DESKTOP_ICON"; then ok "Desktop icon trusted (no confirmation on run)"; fi
     ok "Desktop icon created: $DESKTOP_ICON (click to run)"
 else
     warn "Desktop folder not found; skipping desktop icon. Menu shortcut still available."
@@ -357,11 +369,14 @@ echo "  Installation complete"
 echo "=============================================="
 echo ""
 echo "  To run $APP_NAME:"
-echo "    • From desktop: click 'IoT PubSub GUI' (after next login it runs without confirmation)"
+echo "    • From desktop: click 'IoT PubSub GUI'"
 echo "    • From menu: look for '$APP_NAME' in your applications menu"
 echo "    • From terminal:"
 echo "        cd $INSTALL_DIR"
 echo "        $VENV/bin/python3 iot_pubsub_gui.py"
+echo ""
+echo "  If the desktop icon asks 'Run?' or 'executable script': run this once in a terminal on the Pi:"
+echo "    gio set \"\$HOME/Desktop/iot-pubsub-gui.desktop\" metadata::trusted true"
 echo ""
 echo "  Place your AWS IoT certificate files in: $INSTALL_DIR"
 echo "  Log file: $INSTALL_DIR/iot_pubsub_gui.log"
