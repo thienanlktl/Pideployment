@@ -1308,9 +1308,9 @@ class AWSIoTPubSubGUI(QMainWindow):
         cancel_event: threading.Event,
     ):
         """
-        Perform git fetch, checkout Release/<target_version>, and pull.
-        Uses SSH key from ~/.ssh to avoid permission denied. In-app update pulls from latest Release branch.
-        Runs in background thread. Emits status_message and finished on signals.
+        Fetch Release/<target_version> and update only iot_pubsub_gui.py and VERSION.
+        Does not change branch, reset, or clean; other files (e.g. desktop launcher) are left unchanged.
+        Uses SSH key from ~/.ssh. Runs in background thread. Emits status_message and finished on signals.
         """
         try:
             signals.status_message.emit("Checking repository...")
@@ -1339,39 +1339,7 @@ class AWSIoTPubSubGUI(QMainWindow):
                 signals.finished.emit(False, "Not a git repository (bare).")
                 return
 
-            # Force undo uncommitted changes so we can pull latest
-            if repo.is_dirty():
-                signals.status_message.emit("Discarding local changes...")
-                signals.log_line.emit("Local uncommitted changes detected; discarding to pull latest.")
-                try:
-                    subprocess.run(
-                        ["git", "reset", "--hard", "HEAD"],
-                        cwd=script_dir,
-                        timeout=15,
-                        capture_output=True,
-                        check=True,
-                        text=True,
-                    )
-                    signals.log_line.emit("Reset uncommitted changes done.")
-                    subprocess.run(
-                        ["git", "clean", "-fd"],
-                        cwd=script_dir,
-                        timeout=15,
-                        capture_output=True,
-                        text=True,
-                    )
-                    signals.log_line.emit("Clean untracked files done.")
-                except subprocess.TimeoutExpired:
-                    signals.log_line.emit("ERROR: Timeout discarding local changes.")
-                    signals.finished.emit(False, "Could not discard local changes (timeout).")
-                    return
-                except subprocess.CalledProcessError as e:
-                    err = (e.stderr or e.stdout or "").strip() or str(e)
-                    signals.log_line.emit(f"ERROR (reset): {err}")
-                    signals.finished.emit(False, f"Could not discard local changes: {err}")
-                    return
-
-            signals.log_line.emit("Repository OK.")
+            signals.log_line.emit("Repository OK. Update will replace only iot_pubsub_gui.py and VERSION.")
 
             # Use SSH remote so GIT_SSH_COMMAND (and SSH key) is used; avoid permission denied
             try:
@@ -1427,72 +1395,54 @@ class AWSIoTPubSubGUI(QMainWindow):
                 signals.finished.emit(False, f"Fetch failed: {err}")
                 return
 
-            signals.status_message.emit(f"Checking out {release_branch}...")
+            # Update only iot_pubsub_gui.py and VERSION from the Release branch (no full pull/reset/clean)
+            ref = f"origin/{release_branch}"
+            signals.status_message.emit("Updating iot_pubsub_gui.py and VERSION...")
             if cancel_event.is_set():
                 signals.finished.emit(False, "Update cancelled.")
                 return
-
             try:
-                repo.git.checkout(release_branch)
-                signals.log_line.emit(f"Checkout: {release_branch}.")
-            except Exception:
-                try:
-                    repo.git.checkout("-b", release_branch, f"origin/{release_branch}")
-                    signals.log_line.emit(f"Checkout (new branch): {release_branch}.")
-                except Exception as e:
-                    logger.exception("Git checkout failed")
-                    signals.log_line.emit(f"ERROR (checkout): {e}")
-                    signals.finished.emit(False, f"Checkout failed: {e}")
-                    return
-
-            signals.status_message.emit("Applying updates...")
-            if cancel_event.is_set():
-                signals.finished.emit(False, "Update cancelled.")
-                return
-
-            try:
-                # Pull only latest commit (depth=1); use SSH key to avoid permission denied
                 subprocess.run(
-                    ["git", "pull", "origin", release_branch, "--depth=1"],
+                    ["git", "checkout", ref, "--", "iot_pubsub_gui.py", "VERSION"],
                     cwd=script_dir,
-                    timeout=90,
+                    timeout=30,
                     capture_output=True,
                     check=True,
                     text=True,
                     env=git_env,
                 )
-                signals.log_line.emit("Pull completed (latest only).")
-            except subprocess.TimeoutExpired:
-                signals.log_line.emit("ERROR (pull): Timeout after 90 seconds.")
-                signals.finished.emit(False, "Pull timed out. Check network and try again.")
-                return
+                signals.log_line.emit("Updated iot_pubsub_gui.py and VERSION from release branch.")
             except subprocess.CalledProcessError as e:
-                err = (e.stderr or e.stdout or "").strip()
-                if "permission denied" in err.lower() or "access denied" in err.lower() or "publickey" in err.lower():
-                    signals.log_line.emit("Tip: Use SSH key in ~/.ssh and add public key to GitHub/GitLab. Set remote: git remote set-url origin git@github.com:user/repo.git")
-                try:
-                    subprocess.run(
-                        ["git", "reset", "--hard", f"origin/{release_branch}"],
-                        cwd=script_dir,
-                        timeout=30,
-                        capture_output=True,
-                        check=True,
-                        text=True,
-                        env=git_env,
-                    )
-                    signals.log_line.emit("Reset to origin completed.")
-                except subprocess.TimeoutExpired:
-                    signals.log_line.emit("ERROR (reset): Timeout.")
-                    signals.finished.emit(False, "Update timed out.")
-                    return
-                except subprocess.CalledProcessError as e:
-                    err = (e.stderr or e.stdout or "").strip() or str(e)
-                    signals.log_line.emit(f"ERROR (pull/reset): {err}")
+                err = (e.stderr or e.stdout or "").strip() or str(e)
+                # If VERSION is missing on release branch, try only the .py file
+                if "VERSION" in err or "did not match any file" in err:
+                    try:
+                        subprocess.run(
+                            ["git", "checkout", ref, "--", "iot_pubsub_gui.py"],
+                            cwd=script_dir,
+                            timeout=30,
+                            capture_output=True,
+                            check=True,
+                            text=True,
+                            env=git_env,
+                        )
+                        signals.log_line.emit("Updated iot_pubsub_gui.py (VERSION not on release branch).")
+                    except subprocess.CalledProcessError as e2:
+                        err2 = (e2.stderr or e2.stdout or "").strip() or str(e2)
+                        signals.log_line.emit(f"ERROR (checkout): {err2}")
+                        signals.finished.emit(False, f"Update failed: {err2}")
+                        return
+                else:
+                    signals.log_line.emit(f"ERROR (checkout): {err}")
                     signals.finished.emit(False, f"Update failed: {err}")
                     return
+            except subprocess.TimeoutExpired:
+                signals.log_line.emit("ERROR: Timeout updating files.")
+                signals.finished.emit(False, "Update timed out.")
+                return
             except Exception as e:
-                logger.exception("Git pull failed")
-                signals.log_line.emit(f"ERROR (pull): {e}")
+                logger.exception("Checkout files failed")
+                signals.log_line.emit(f"ERROR: {e}")
                 signals.finished.emit(False, f"Update failed: {e}")
                 return
 
