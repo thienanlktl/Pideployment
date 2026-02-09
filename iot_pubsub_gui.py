@@ -1,15 +1,17 @@
 """
 AWS IoT Pub/Sub GUI Application using PyQt6 and AWS IoT Device SDK v2
 
+This app uses PyQt6 (not Tkinter). It includes in-app self-updating via GitPython,
+fullscreen-by-default, and a one-click installer (install.sh) for Raspberry Pi.
+
 Installation:
-    pip install PyQt6 awsiotsdk
+    pip install -r requirements.txt  # includes PyQt6, awsiotsdk, GitPython
 
 Run:
     python iot_pubsub_gui.py
 
-Test:
-    Use AWS IoT Core MQTT test client to publish to your subscribed topics
-    and see messages appear in the app log in real-time.
+On Raspberry Pi: use install.sh for one-click setup, then run from menu or:
+    cd ~/iot-pubsub-gui && venv/bin/python3 iot_pubsub_gui.py
 """
 
 import sys
@@ -104,9 +106,10 @@ check_dependencies()
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QTextEdit, QPushButton, QGroupBox, QMessageBox,
-    QDialog, QTableWidget, QTableWidgetItem, QHeaderView
+    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QProgressBar,
+    QFrame, QScrollArea, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QObject, pyqtSignal, QMetaObject, Q_ARG, QThread, QTimer
+from PyQt6.QtCore import Qt, QObject, pyqtSignal, QMetaObject, Q_ARG, QThread, QTimer, QEvent
 from PyQt6.QtGui import QTextCursor, QColor
 
 from awscrt import mqtt
@@ -118,6 +121,13 @@ try:
     REQUESTS_AVAILABLE = True
 except ImportError:
     REQUESTS_AVAILABLE = False
+
+# Try to import GitPython for in-app git updates
+try:
+    import git  # type: ignore[import-untyped]
+    GITPYTHON_AVAILABLE = True
+except ImportError:
+    GITPYTHON_AVAILABLE = False
 
 # Version information
 __version__ = "1.0.0"
@@ -155,6 +165,116 @@ class UpdateChecker(QObject):
     update_available = pyqtSignal(str, str)  # latest_sha, local_sha
     check_complete = pyqtSignal(bool)  # success
     log_message = pyqtSignal(str)  # log message from background thread
+
+
+class UpdateProgressSignals(QObject):
+    """Signals for update progress dialog (thread-safe GUI updates during git operations)"""
+    status_message = pyqtSignal(str)
+    log_line = pyqtSignal(str)  # append to progress log only (e.g. errors, details)
+    finished = pyqtSignal(bool, str)  # success, message
+
+
+class UpdateProgressDialog(QDialog):
+    """
+    Simple update dialog: progress bar only and one-line status.
+    Log is written to update_progress.log file (no log area in UI).
+    """
+    def __init__(self, parent=None, cancel_event=None, log_file_path=None):
+        super().__init__(parent)
+        self.cancel_event = cancel_event or threading.Event()
+        self.log_file_path = Path(log_file_path) if log_file_path else None
+        self.setWindowTitle("Updating")
+        self.setModal(True)
+        self.setFixedSize(380, 120)
+        self._finished = False
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        self.status_label = QLabel("Updating...")
+        self.status_label.setStyleSheet("font-size: 11pt; color: #333;")
+        layout.addWidget(self.status_label)
+
+        self.progress_bar = QProgressBar(self)
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setMinimumHeight(12)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #ccc;
+                border-radius: 6px;
+                background: #f0f0f0;
+            }
+            QProgressBar::chunk {
+                background: #1a73e8;
+                border-radius: 5px;
+            }
+        """)
+        layout.addWidget(self.progress_bar)
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setStyleSheet("QPushButton { padding: 6px 16px; }")
+        self.cancel_btn.clicked.connect(self._on_cancel)
+        layout.addWidget(self.cancel_btn)
+
+        if self.log_file_path:
+            try:
+                self.log_file_path.write_text(
+                    f"===== Update started {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} =====\n",
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+        self._write_log("Preparing update...")
+
+    def _write_log(self, line: str):
+        if self.log_file_path:
+            try:
+                ts = datetime.now().strftime("%H:%M:%S")
+                with self.log_file_path.open("a", encoding="utf-8") as f:
+                    f.write(f"[{ts}] {line}\n")
+            except Exception:
+                pass
+
+    def _on_cancel(self):
+        if not self._finished:
+            self.cancel_event.set()
+            self.status_label.setText("Cancelling...")
+            self.cancel_btn.setEnabled(False)
+
+    def set_status(self, text: str):
+        self.status_label.setText(text)
+        self._write_log(text)
+
+    def append_log_only(self, text: str):
+        self._write_log(text)
+
+    def set_finished(self, success: bool, message: str):
+        self._finished = True
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(100 if success else 0)
+        if success:
+            self.progress_bar.setStyleSheet("QProgressBar { border: 1px solid #34a853; border-radius: 6px; background: #e6f4ea; } QProgressBar::chunk { background: #34a853; border-radius: 5px; }")
+            self.status_label.setStyleSheet("font-size: 11pt; font-weight: bold; color: #34a853;")
+            self.status_label.setText("Restarting...")
+            self.cancel_btn.setEnabled(False)
+        else:
+            self.progress_bar.setStyleSheet("QProgressBar { border: 1px solid #ea4335; border-radius: 6px; background: #fce8e6; } QProgressBar::chunk { background: #ea4335; border-radius: 5px; }")
+            self.status_label.setStyleSheet("font-size: 11pt; font-weight: bold; color: #ea4335;")
+            self.status_label.setText(message)
+            self.cancel_btn.setText("Close")
+            try:
+                self.cancel_btn.clicked.disconnect()
+            except TypeError:
+                pass
+            self.cancel_btn.clicked.connect(self.accept)
+        self._write_log("Done: " + message)
+        if self.log_file_path:
+            try:
+                with self.log_file_path.open("a", encoding="utf-8") as f:
+                    f.write(f"\n===== Update finished ({'Success' if success else 'Failed'}) {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} =====\n\n")
+            except Exception:
+                pass
 
 
 class AWSIoTPubSubGUI(QMainWindow):
@@ -223,6 +343,16 @@ class AWSIoTPubSubGUI(QMainWindow):
         self.version_label = QLabel(f"Version: {__version__}")
         self.version_label.setStyleSheet("font-size: 10pt; color: gray; padding: 5px;")
         top_bar_layout.addWidget(self.version_label)
+
+        # Full screen toggle (always visible: "Full screen" when windowed, "Exit fullscreen" when full screen)
+        self.fullscreen_btn = QPushButton("Full screen")
+        self.fullscreen_btn.setStyleSheet(
+            "font-size: 9pt; color: gray; padding: 4px 8px; "
+            "background-color: transparent; border: 1px solid #ccc;"
+        )
+        self.fullscreen_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.fullscreen_btn.clicked.connect(self._toggle_fullscreen)
+        top_bar_layout.addWidget(self.fullscreen_btn)
         
         # New version available label (clickable, next to version label, initially hidden)
         self.new_version_label = QPushButton()
@@ -347,6 +477,23 @@ class AWSIoTPubSubGUI(QMainWindow):
         
         # Add initial log message
         self.add_log("Application started. Click 'Connect to AWS IoT' to begin.")
+
+    def _toggle_fullscreen(self):
+        """Toggle between full screen and windowed (maximized)."""
+        if self.isFullScreen():
+            self.showNormal()
+            self.showMaximized()
+            self.fullscreen_btn.setText("Full screen")
+        else:
+            self.showFullScreen()
+            self.fullscreen_btn.setText("Exit fullscreen")
+
+    def _exit_fullscreen(self):
+        """Exit fullscreen and show window normal (or maximized)."""
+        if self.isFullScreen():
+            self.showNormal()
+            self.showMaximized()
+            self.fullscreen_btn.setText("Full screen")
     
     def update_status(self, message: str, is_success: bool = True):
         """Update the status label with color coding"""
@@ -1014,120 +1161,370 @@ class AWSIoTPubSubGUI(QMainWindow):
         self.add_log(f"Update available! Latest version: {remote_version}, Current version: {local_version}")
     
     def on_new_version_clicked(self):
-        """Handle click on new version label - show confirmation dialog"""
+        """Handle click on new version label - show confirmation then run in-app update with progress dialog."""
         if not self.latest_release_version:
             return
-        
+        if not GITPYTHON_AVAILABLE:
+            QMessageBox.warning(
+                self,
+                "Update Unavailable",
+                "GitPython is not installed. Install it with: pip install gitpython\n\n"
+                "Or update manually from the installation directory using git pull."
+            )
+            return
+
         reply = QMessageBox.question(
             self,
             "Confirm Update",
-            f"A new version ({self.latest_release_version}) is available!\n\n"
+            f"A new version ({self.latest_release_version}) is available.\n\n"
             f"Current version: {self.local_version or __version__}\n\n"
-            f"This will update the application and restart it.\n\n"
-            f"Do you want to continue?",
+            f"The app will update and then restart automatically in full screen.\n\n"
+            f"Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            self.start_update_process()
-    
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self._run_in_app_update(self.latest_release_version)
+
     def on_update_check_complete(self, success: bool):
         """Handle update check completion"""
         if success:
             logger.info("Update check completed")
         else:
             logger.warning("Update check completed with errors")
-    
-    def start_update_process(self):
-        """Start the update process by launching update service and shutting down"""
+
+    def _on_update_finished(self, success: bool, message: str, dialog: QDialog):
+        """Called when update worker finishes; on success close dialog and restart app."""
+        dialog.set_finished(success, message)
+        if success:
+            QTimer.singleShot(1200, lambda: self._close_dialog_and_restart(dialog))
+
+    def _close_dialog_and_restart(self, dialog: QDialog):
+        """Close the update dialog and restart the application (new version, full screen)."""
+        dialog.accept()
+        self._restart_app_after_update()
+
+    def _restart_app_after_update(self):
+        """Start a new process running this app (new version) then quit current process."""
+        python_exe = self._get_venv_python() or sys.executable
+        script = self.script_dir / "iot_pubsub_gui.py"
+        cwd = str(self.script_dir)
+        kwargs = {"cwd": cwd}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["start_new_session"] = True
         try:
-            logger.info("Starting update process...")
-            self.add_log("=" * 60)
-            self.add_log("Preparing for update...")
-            
-            # Disable update label and show updating status
-            self.new_version_label.setEnabled(False)
-            self.new_version_label.setText("Preparing update...")
-            
-            # Get the target version
-            target_version = self.latest_release_version
-            if not target_version:
-                raise Exception("No target version specified for update")
-            
-            # Find update service script
-            update_service_script = self.script_dir / "update_service.py"
-            if not update_service_script.exists():
-                raise Exception(f"Update service script not found: {update_service_script}")
-            
-            # Get Python executable to run update service
-            venv_python = self._get_venv_python()
-            if not venv_python:
-                venv_python = Path(sys.executable)
-            
-            self.add_log(f"Launching update service for version {target_version}...")
-            logger.info(f"Launching update service: {venv_python} {update_service_script} {target_version} {self.script_dir}")
-            
-            # Launch update service in background
-            if sys.platform == 'win32':
-                # Windows
-                subprocess.Popen(
-                    [str(venv_python), str(update_service_script), target_version, str(self.script_dir)],
-                    cwd=str(self.script_dir),
-                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-                )
-            else:
-                # Linux/Mac
-                subprocess.Popen(
-                    [str(venv_python), str(update_service_script), target_version, str(self.script_dir)],
-                    cwd=str(self.script_dir),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True
-                )
-            
-            self.add_log("Update service launched. Application will now close...")
-            self.add_log("The update service will handle the update and restart.")
-            self.add_log("=" * 60)
-            
-            # Give a moment for the update service to start
-            QTimer.singleShot(500, self.shutdown_application)
-            
+            subprocess.Popen([str(python_exe), str(script), "--fullscreen"], **kwargs)
         except Exception as e:
-            error_msg = f"Failed to start update process: {e}"
-            logger.error(error_msg)
-            self.add_log(f"ERROR: {error_msg}")
-            QMessageBox.critical(
+            logger.exception("Failed to restart application: %s", e)
+            QMessageBox.warning(
                 self,
-                "Update Error",
-                f"Failed to start update process:\n{error_msg}"
+                "Restart failed",
+                f"The update completed but the application could not restart.\n\nPlease start it manually.\n\n{e}",
             )
-            if self.latest_release_version:
-                self.new_version_label.setText(f"→ New version {self.latest_release_version} available (click to upgrade)")
-            self.new_version_label.setEnabled(True)
-    
-    def shutdown_application(self):
-        """Shutdown the application gracefully"""
+        app = QApplication.instance()
+        if app:
+            app.quit()
+
+    def _run_in_app_update(self, target_version: str):
+        """
+        Run update in background thread with a simple progress dialog.
+        On success, dialog closes and the application restarts in full screen.
+        """
+        cancel_event = threading.Event()
+        progress_signals = UpdateProgressSignals()
+        log_file = self.script_dir / "update_progress.log"
+        dialog = UpdateProgressDialog(self, cancel_event=cancel_event, log_file_path=log_file)
+        progress_signals.status_message.connect(dialog.set_status)
+        progress_signals.log_line.connect(dialog.append_log_only)
+        progress_signals.finished.connect(lambda s, m: self._on_update_finished(s, m, dialog))
+
+        def worker():
+            self._do_git_update(
+                str(self.script_dir),
+                target_version,
+                progress_signals,
+                cancel_event,
+            )
+
+        self.new_version_label.setEnabled(False)
+        self.new_version_label.setText("Updating...")
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        dialog.exec()
+        # Re-enable label and restore text if update was cancelled or failed (no restart)
+        self.new_version_label.setText(f"→ New version {self.latest_release_version} available (click to upgrade)")
+        self.new_version_label.setEnabled(True)
+
+    def _get_git_env_with_ssh(self):
+        """
+        Find .ssh in the current user's home directory: home/{user}/.ssh (e.g. /home/pi/.ssh).
+        Use public/private key from that folder only; never from the iot pubsub app folder.
+        IOT_SSH_DIR overrides the path; else id_ed25519, id_rsa, id_ecdsa or any PRIVATE KEY file.
+        """
+        env = os.environ.copy()
+        # home/{user}/.ssh — current user's home directory (e.g. /home/pi/.ssh on Pi)
+        user_home = Path.home()
+        default_ssh = user_home / ".ssh"
+        ssh_dir = Path(os.environ["IOT_SSH_DIR"]).expanduser().resolve() if os.environ.get("IOT_SSH_DIR") else default_ssh
+        key_file = None
+        if os.environ.get("IOT_SSH_KEY"):
+            k = Path(os.environ["IOT_SSH_KEY"]).expanduser().resolve()
+            if k.is_file():
+                key_file = k
+        if not key_file and ssh_dir.is_dir():
+            for name in ("id_ed25519", "id_rsa", "id_ecdsa"):
+                p = ssh_dir / name
+                if p.is_file():
+                    key_file = p
+                    break
+            if not key_file:
+                for f in ssh_dir.iterdir():
+                    if not f.is_file():
+                        continue
+                    if f.suffix == ".pub" or f.name in ("config", "known_hosts", "authorized_keys"):
+                        continue
+                    try:
+                        if "PRIVATE KEY" in f.read_text(encoding="utf-8", errors="ignore"):
+                            key_file = f
+                            break
+                    except Exception:
+                        continue
+        if key_file:
+            key_path = str(key_file.resolve())
+            env["GIT_SSH_COMMAND"] = f"ssh -i '{key_path}' -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+            return env, key_path
+        return env, None
+
+    def _do_git_update(
+        self,
+        script_dir: str,
+        target_version: str,
+        signals: UpdateProgressSignals,
+        cancel_event: threading.Event,
+    ):
+        """
+        Perform git fetch, checkout Release/<target_version>, and pull.
+        Uses SSH key from ~/.ssh to avoid permission denied. In-app update pulls from latest Release branch.
+        Runs in background thread. Emits status_message and finished on signals.
+        """
         try:
-            logger.info("Shutting down application for update...")
-            self.add_log("Shutting down application...")
-            
-            # Disconnect from IoT if connected
-            if self.is_connected:
-                self.disconnect_from_iot()
-            
-            # Close the application
-            QApplication.instance().quit()
-            
+            signals.status_message.emit("Checking repository...")
+            if cancel_event.is_set():
+                signals.finished.emit(False, "Update cancelled.")
+                return
+
+            git_env, ssh_key_path = self._get_git_env_with_ssh()
+            if ssh_key_path:
+                signals.log_line.emit(f"Using SSH key from user home .ssh: {ssh_key_path}")
+
+            if not GITPYTHON_AVAILABLE:
+                signals.log_line.emit("ERROR: GitPython not installed.")
+                signals.finished.emit(False, "GitPython not installed. Run: pip install gitpython")
+                return
+
+            try:
+                repo = git.Repo(script_dir)
+            except Exception as e:
+                signals.log_line.emit(f"ERROR: {e}")
+                signals.finished.emit(False, "Not a git repository or access denied.")
+                return
+
+            if repo.bare:
+                signals.log_line.emit("ERROR: Repository is bare.")
+                signals.finished.emit(False, "Not a git repository (bare).")
+                return
+
+            # Force undo uncommitted changes so we can pull latest
+            if repo.is_dirty():
+                signals.status_message.emit("Discarding local changes...")
+                signals.log_line.emit("Local uncommitted changes detected; discarding to pull latest.")
+                try:
+                    subprocess.run(
+                        ["git", "reset", "--hard", "HEAD"],
+                        cwd=script_dir,
+                        timeout=15,
+                        capture_output=True,
+                        check=True,
+                        text=True,
+                    )
+                    signals.log_line.emit("Reset uncommitted changes done.")
+                    subprocess.run(
+                        ["git", "clean", "-fd"],
+                        cwd=script_dir,
+                        timeout=15,
+                        capture_output=True,
+                        text=True,
+                    )
+                    signals.log_line.emit("Clean untracked files done.")
+                except subprocess.TimeoutExpired:
+                    signals.log_line.emit("ERROR: Timeout discarding local changes.")
+                    signals.finished.emit(False, "Could not discard local changes (timeout).")
+                    return
+                except subprocess.CalledProcessError as e:
+                    err = (e.stderr or e.stdout or "").strip() or str(e)
+                    signals.log_line.emit(f"ERROR (reset): {err}")
+                    signals.finished.emit(False, f"Could not discard local changes: {err}")
+                    return
+
+            signals.log_line.emit("Repository OK.")
+
+            # Use SSH remote so GIT_SSH_COMMAND (and SSH key) is used; avoid permission denied
+            try:
+                origin_url = repo.remotes.origin.url
+                if origin_url.startswith("https://github.com/"):
+                    path = origin_url.replace("https://github.com/", "").strip("/").replace(".git", "")
+                    ssh_url = f"git@github.com:{path}.git"
+                    if ssh_url != origin_url:
+                        repo.remotes.origin.set_url(ssh_url)
+                        signals.log_line.emit(f"Using SSH remote for update: {ssh_url}")
+                elif origin_url.startswith("https://gitlab.com/"):
+                    path = origin_url.replace("https://gitlab.com/", "").strip("/").replace(".git", "")
+                    ssh_url = f"git@gitlab.com:{path}.git"
+                    if ssh_url != origin_url:
+                        repo.remotes.origin.set_url(ssh_url)
+                        signals.log_line.emit(f"Using SSH remote for update: {ssh_url}")
+            except Exception as e:
+                signals.log_line.emit(f"Note: Could not switch to SSH remote: {e}")
+
+            release_branch = f"Release/{target_version}"
+            # Fetch only the release branch (faster than full fetch) with timeout
+            signals.status_message.emit("Fetching from remote...")
+            if cancel_event.is_set():
+                signals.finished.emit(False, "Update cancelled.")
+                return
+            try:
+                # Fetch only latest commit (depth=1); use SSH key to avoid permission denied
+                subprocess.run(
+                    ["git", "fetch", "origin", release_branch, "--depth=1"],
+                    cwd=script_dir,
+                    timeout=60,
+                    capture_output=True,
+                    check=True,
+                    text=True,
+                    env=git_env,
+                )
+                signals.log_line.emit("Fetch completed (latest only).")
+            except subprocess.TimeoutExpired:
+                signals.log_line.emit("ERROR (fetch): Timeout after 60 seconds.")
+                signals.finished.emit(False, "Fetch timed out. Check network and try again.")
+                return
+            except subprocess.CalledProcessError as e:
+                err = (e.stderr or e.stdout or "").strip() or "Fetch failed."
+                signals.log_line.emit(f"ERROR (fetch): {err}")
+                if "permission denied" in err.lower() or "access denied" in err.lower() or "publickey" in err.lower():
+                    signals.log_line.emit("Tip: Ensure SSH key is in ~/.ssh (id_ed25519 or id_rsa) and public key is added to GitHub/GitLab. Remote should use SSH URL (git@github.com:...).")
+                signals.finished.emit(False, f"Fetch failed: {err}")
+                return
+            except Exception as e:
+                logger.exception("Git fetch failed")
+                err = str(e).strip() or "Network or permission error."
+                signals.log_line.emit(f"ERROR (fetch): {err}")
+                signals.finished.emit(False, f"Fetch failed: {err}")
+                return
+
+            signals.status_message.emit(f"Checking out {release_branch}...")
+            if cancel_event.is_set():
+                signals.finished.emit(False, "Update cancelled.")
+                return
+
+            try:
+                repo.git.checkout(release_branch)
+                signals.log_line.emit(f"Checkout: {release_branch}.")
+            except Exception:
+                try:
+                    repo.git.checkout("-b", release_branch, f"origin/{release_branch}")
+                    signals.log_line.emit(f"Checkout (new branch): {release_branch}.")
+                except Exception as e:
+                    logger.exception("Git checkout failed")
+                    signals.log_line.emit(f"ERROR (checkout): {e}")
+                    signals.finished.emit(False, f"Checkout failed: {e}")
+                    return
+
+            signals.status_message.emit("Applying updates...")
+            if cancel_event.is_set():
+                signals.finished.emit(False, "Update cancelled.")
+                return
+
+            try:
+                # Pull only latest commit (depth=1); use SSH key to avoid permission denied
+                subprocess.run(
+                    ["git", "pull", "origin", release_branch, "--depth=1"],
+                    cwd=script_dir,
+                    timeout=90,
+                    capture_output=True,
+                    check=True,
+                    text=True,
+                    env=git_env,
+                )
+                signals.log_line.emit("Pull completed (latest only).")
+            except subprocess.TimeoutExpired:
+                signals.log_line.emit("ERROR (pull): Timeout after 90 seconds.")
+                signals.finished.emit(False, "Pull timed out. Check network and try again.")
+                return
+            except subprocess.CalledProcessError as e:
+                err = (e.stderr or e.stdout or "").strip()
+                if "permission denied" in err.lower() or "access denied" in err.lower() or "publickey" in err.lower():
+                    signals.log_line.emit("Tip: Use SSH key in ~/.ssh and add public key to GitHub/GitLab. Set remote: git remote set-url origin git@github.com:user/repo.git")
+                try:
+                    subprocess.run(
+                        ["git", "reset", "--hard", f"origin/{release_branch}"],
+                        cwd=script_dir,
+                        timeout=30,
+                        capture_output=True,
+                        check=True,
+                        text=True,
+                        env=git_env,
+                    )
+                    signals.log_line.emit("Reset to origin completed.")
+                except subprocess.TimeoutExpired:
+                    signals.log_line.emit("ERROR (reset): Timeout.")
+                    signals.finished.emit(False, "Update timed out.")
+                    return
+                except subprocess.CalledProcessError as e:
+                    err = (e.stderr or e.stdout or "").strip() or str(e)
+                    signals.log_line.emit(f"ERROR (pull/reset): {err}")
+                    signals.finished.emit(False, f"Update failed: {err}")
+                    return
+            except Exception as e:
+                logger.exception("Git pull failed")
+                signals.log_line.emit(f"ERROR (pull): {e}")
+                signals.finished.emit(False, f"Update failed: {e}")
+                return
+
+            logger.info("In-app update completed successfully")
+            signals.log_line.emit("Update completed successfully.")
+            self.update_checker.log_message.emit("Update completed. Restart the application to apply changes.")
+            signals.finished.emit(
+                True,
+                "Update complete. Restart the application to apply changes.",
+            )
         except Exception as e:
-            logger.error(f"Error during shutdown: {e}")
-            # Force quit if graceful shutdown fails
-            QApplication.instance().quit()
-    
+            logger.exception("Update failed")
+            err_msg = str(e).strip() or type(e).__name__
+            signals.log_line.emit(f"ERROR: {err_msg}")
+            for line in traceback.format_exc().splitlines()[-5:]:
+                if line.strip():
+                    signals.log_line.emit(f"  {line.strip()}")
+            signals.finished.emit(False, f"Update failed: {err_msg}")
+
     def perform_update(self):
-        """Legacy method - kept for backward compatibility but redirects to start_update_process"""
-        self.start_update_process()
+        """Legacy: start in-app update if a new version is available."""
+        if self.latest_release_version:
+            self.on_new_version_clicked()
+        else:
+            self.add_log("No update available.")
     
+    def changeEvent(self, event):
+        """Update full screen button text when window state changes (e.g. after showFullScreen() at startup)."""
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange and hasattr(self, "fullscreen_btn"):
+            self.fullscreen_btn.setText("Exit fullscreen" if self.isFullScreen() else "Full screen")
+
     def closeEvent(self, event):
         """Handle window close event"""
         if self.is_connected:
@@ -1139,10 +1536,15 @@ def main():
     """Main entry point"""
     app = QApplication(sys.argv)
     app.setStyle('Fusion')  # Modern look
-    
+
     window = AWSIoTPubSubGUI()
     window.show()
-    
+    # Full screen by default; use --no-fullscreen to start windowed. Restart after update passes --fullscreen.
+    use_fullscreen = "--no-fullscreen" not in sys.argv
+    if use_fullscreen:
+        # Delay so the window is mapped first; ensures full screen applies reliably after restart
+        QTimer.singleShot(100, window.showFullScreen)
+
     sys.exit(app.exec())
 
 
