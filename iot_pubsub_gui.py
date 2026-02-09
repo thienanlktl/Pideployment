@@ -176,115 +176,61 @@ class UpdateProgressSignals(QObject):
 
 class UpdateProgressDialog(QDialog):
     """
-    Modal dialog shown during in-app update: progress bar, status log, cancel button.
-    Update runs in a background thread; this dialog stays responsive and shows a live log.
-    Log is also written to a text file when finished (if log_file_path is set).
+    Simple update dialog: progress bar only and one-line status.
+    Log is written to update_progress.log file (no log area in UI).
     """
     def __init__(self, parent=None, cancel_event=None, log_file_path=None):
         super().__init__(parent)
         self.cancel_event = cancel_event or threading.Event()
         self.log_file_path = Path(log_file_path) if log_file_path else None
-        self.setWindowTitle("Application Update")
+        self.setWindowTitle("Updating")
         self.setModal(True)
-        self.setFixedSize(500, 380)
+        self.setFixedSize(380, 120)
         self._finished = False
-        self._success = False
 
-        # Main layout
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
         layout.setContentsMargins(20, 20, 20, 20)
 
-        # Title
-        title = QLabel("Updating IoT PubSub GUI")
-        title.setStyleSheet(
-            "font-size: 14pt; font-weight: bold; color: #1a73e8; padding: 4px 0;"
-        )
-        layout.addWidget(title)
-
-        # Current status (prominent)
-        self.status_label = QLabel("Preparing...")
-        self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet(
-            "font-size: 11pt; color: #333; padding: 6px 0; min-height: 22px;"
-        )
+        self.status_label = QLabel("Updating...")
+        self.status_label.setStyleSheet("font-size: 11pt; color: #333;")
         layout.addWidget(self.status_label)
 
-        # Progress bar
         self.progress_bar = QProgressBar(self)
         self.progress_bar.setRange(0, 0)
-        self.progress_bar.setMinimumHeight(10)
+        self.progress_bar.setMinimumHeight(12)
         self.progress_bar.setStyleSheet("""
             QProgressBar {
                 border: 1px solid #ccc;
-                border-radius: 5px;
-                text-align: center;
+                border-radius: 6px;
                 background: #f0f0f0;
             }
             QProgressBar::chunk {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #1a73e8, stop:1 #34a853);
-                border-radius: 4px;
+                background: #1a73e8;
+                border-radius: 5px;
             }
         """)
         layout.addWidget(self.progress_bar)
 
-        # Update log (scrollable); also written to update_progress.log when finished
-        log_label = QLabel("Update log (saved to update_progress.log when finished)")
-        log_label.setStyleSheet("font-size: 10pt; color: #666; padding-top: 8px;")
-        layout.addWidget(log_label)
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(120)
-        self.log_text.setStyleSheet("""
-            QTextEdit {
-                font-family: 'Consolas', 'Monaco', monospace;
-                font-size: 9pt;
-                background: #f8f9fa;
-                border: 1px solid #dee2e6;
-                border-radius: 4px;
-                padding: 6px;
-            }
-        """)
-        self.log_text.setPlaceholderText("Status messages will appear here...")
-        layout.addWidget(self.log_text)
-
-        # Button
         self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.setMinimumHeight(36)
-        self.cancel_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 11pt;
-                padding: 8px 20px;
-                background: #5f6368;
-                color: white;
-                border: none;
-                border-radius: 6px;
-            }
-            QPushButton:hover { background: #4a4d52; }
-            QPushButton:disabled { background: #bdc1c6; color: #5f6368; }
-        """)
+        self.cancel_btn.setStyleSheet("QPushButton { padding: 6px 16px; }")
         self.cancel_btn.clicked.connect(self._on_cancel)
         layout.addWidget(self.cancel_btn)
 
-        # Start log file when update runs (header line)
         if self.log_file_path:
             try:
                 self.log_file_path.write_text(
                     f"===== Update started {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} =====\n",
                     encoding="utf-8",
                 )
-            except Exception as e:
-                logger.warning("Could not write update log file header: %s", e)
-        self._append_log("Preparing update...")
+            except Exception:
+                pass
+        self._write_log("Preparing update...")
 
-    def _append_log(self, line: str):
-        ts = datetime.now().strftime("%H:%M:%S")
-        self.log_text.append(f"[{ts}] {line}")
-        self.log_text.moveCursor(QTextCursor.MoveOperation.End)
-        # Append to log file as we go (so log exists even if dialog is closed)
+    def _write_log(self, line: str):
         if self.log_file_path:
             try:
+                ts = datetime.now().strftime("%H:%M:%S")
                 with self.log_file_path.open("a", encoding="utf-8") as f:
                     f.write(f"[{ts}] {line}\n")
             except Exception:
@@ -294,74 +240,41 @@ class UpdateProgressDialog(QDialog):
         if not self._finished:
             self.cancel_event.set()
             self.status_label.setText("Cancelling...")
-            self._append_log("Cancelling...")
             self.cancel_btn.setEnabled(False)
 
     def set_status(self, text: str):
         self.status_label.setText(text)
-        self._append_log(text)
+        self._write_log(text)
 
     def append_log_only(self, text: str):
-        """Append a line to the progress log without changing the status label (e.g. errors, details)."""
-        self._append_log(text)
+        self._write_log(text)
 
     def set_finished(self, success: bool, message: str):
         self._finished = True
-        self._success = success
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(100 if success else 0)
         if success:
-            self.progress_bar.setStyleSheet("""
-                QProgressBar {
-                    border: 1px solid #34a853;
-                    border-radius: 5px;
-                    background: #e6f4ea;
-                }
-                QProgressBar::chunk { background: #34a853; border-radius: 4px; }
-            """)
-            self.status_label.setStyleSheet(
-                "font-size: 11pt; font-weight: bold; color: #34a853; padding: 6px 0;"
-            )
+            self.progress_bar.setStyleSheet("QProgressBar { border: 1px solid #34a853; border-radius: 6px; background: #e6f4ea; } QProgressBar::chunk { background: #34a853; border-radius: 5px; }")
+            self.status_label.setStyleSheet("font-size: 11pt; font-weight: bold; color: #34a853;")
+            self.status_label.setText("Restarting...")
+            self.cancel_btn.setEnabled(False)
         else:
-            self.progress_bar.setStyleSheet("""
-                QProgressBar {
-                    border: 1px solid #ea4335;
-                    border-radius: 5px;
-                    background: #fce8e6;
-                }
-                QProgressBar::chunk { background: #ea4335; border-radius: 4px; }
-            """)
-            self.status_label.setStyleSheet(
-                "font-size: 11pt; font-weight: bold; color: #ea4335; padding: 6px 0;"
-            )
-        self.status_label.setText(message)
-        self._append_log("Done: " + message)
-        # Append footer to log file
+            self.progress_bar.setStyleSheet("QProgressBar { border: 1px solid #ea4335; border-radius: 6px; background: #fce8e6; } QProgressBar::chunk { background: #ea4335; border-radius: 5px; }")
+            self.status_label.setStyleSheet("font-size: 11pt; font-weight: bold; color: #ea4335;")
+            self.status_label.setText(message)
+            self.cancel_btn.setText("Close")
+            try:
+                self.cancel_btn.clicked.disconnect()
+            except TypeError:
+                pass
+            self.cancel_btn.clicked.connect(self.accept)
+        self._write_log("Done: " + message)
         if self.log_file_path:
             try:
                 with self.log_file_path.open("a", encoding="utf-8") as f:
                     f.write(f"\n===== Update finished ({'Success' if success else 'Failed'}) {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} =====\n\n")
-                logger.info("Update progress log: %s", self.log_file_path)
-            except Exception as e:
-                logger.warning("Could not append update log footer: %s", e)
-        self.cancel_btn.setText("Close")
-        self.cancel_btn.setEnabled(True)
-        self.cancel_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 11pt;
-                padding: 8px 20px;
-                background: #1a73e8;
-                color: white;
-                border: none;
-                border-radius: 6px;
-            }
-            QPushButton:hover { background: #1557b0; }
-        """)
-        try:
-            self.cancel_btn.clicked.disconnect()
-        except TypeError:
-            pass
-        self.cancel_btn.clicked.connect(self.accept)
+            except Exception:
+                pass
 
 
 class AWSIoTPubSubGUI(QMainWindow):
@@ -1254,7 +1167,7 @@ class AWSIoTPubSubGUI(QMainWindow):
             "Confirm Update",
             f"A new version ({self.latest_release_version}) is available.\n\n"
             f"Current version: {self.local_version or __version__}\n\n"
-            f"The update will run in the background. When finished, restart the application to apply changes.\n\n"
+            f"The app will update and then restart automatically in full screen.\n\n"
             f"Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
@@ -1272,10 +1185,44 @@ class AWSIoTPubSubGUI(QMainWindow):
         else:
             logger.warning("Update check completed with errors")
 
+    def _on_update_finished(self, success: bool, message: str, dialog: QDialog):
+        """Called when update worker finishes; on success close dialog and restart app."""
+        dialog.set_finished(success, message)
+        if success:
+            QTimer.singleShot(1200, lambda: self._close_dialog_and_restart(dialog))
+
+    def _close_dialog_and_restart(self, dialog: QDialog):
+        """Close the update dialog and restart the application (new version, full screen)."""
+        dialog.accept()
+        self._restart_app_after_update()
+
+    def _restart_app_after_update(self):
+        """Start a new process running this app (new version) then quit current process."""
+        python_exe = self._get_venv_python() or sys.executable
+        script = self.script_dir / "iot_pubsub_gui.py"
+        cwd = str(self.script_dir)
+        kwargs = {"cwd": cwd}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            kwargs["start_new_session"] = True
+        try:
+            subprocess.Popen([str(python_exe), str(script)], **kwargs)
+        except Exception as e:
+            logger.exception("Failed to restart application: %s", e)
+            QMessageBox.warning(
+                self,
+                "Restart failed",
+                f"The update completed but the application could not restart.\n\nPlease start it manually.\n\n{e}",
+            )
+        app = QApplication.instance()
+        if app:
+            app.quit()
+
     def _run_in_app_update(self, target_version: str):
         """
-        Run update in background thread with a modal progress dialog.
-        No restart; user is prompted to restart when done.
+        Run update in background thread with a simple progress dialog.
+        On success, dialog closes and the application restarts in full screen.
         """
         cancel_event = threading.Event()
         progress_signals = UpdateProgressSignals()
@@ -1283,7 +1230,7 @@ class AWSIoTPubSubGUI(QMainWindow):
         dialog = UpdateProgressDialog(self, cancel_event=cancel_event, log_file_path=log_file)
         progress_signals.status_message.connect(dialog.set_status)
         progress_signals.log_line.connect(dialog.append_log_only)
-        progress_signals.finished.connect(dialog.set_finished)
+        progress_signals.finished.connect(lambda s, m: self._on_update_finished(s, m, dialog))
 
         def worker():
             self._do_git_update(
@@ -1298,7 +1245,7 @@ class AWSIoTPubSubGUI(QMainWindow):
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
         dialog.exec()
-        # Re-enable label and restore text if update was cancelled or failed
+        # Re-enable label and restore text if update was cancelled or failed (no restart)
         self.new_version_label.setText(f"→ New version {self.latest_release_version} available (click to upgrade)")
         self.new_version_label.setEnabled(True)
 
