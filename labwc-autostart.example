@@ -1,0 +1,21 @@
+# labwc autostart for kiosk
+# Copy to: ~/.config/labwc/autostart
+#   mkdir -p ~/.config/labwc
+#   cp labwc-autostart.example ~/.config/labwc/autostart
+#
+APP_DIR="/home/pi/iot-pubsub-gui"
+
+# Ensure venv and all packages installed (creates venv if missing; idempotent)
+[ -f "$APP_DIR/venv/bin/python3" ] || (cd "$APP_DIR" && bash ./ensure_venv.sh) || true
+
+# Hide cursor when idle (0.1 second)
+unclutter -idle 0.1 &
+
+# Monitor: restart app if it crashes (checks every 10s); uses venv
+"$APP_DIR/monitor.sh" &
+
+# Give labwc and unclutter a moment
+sleep 2
+
+# Start kiosk app with venv (fullscreen, no exit keys). Monitor will restart if it exits.
+"$APP_DIR/venv/bin/python3" "$APP_DIR/iot_pubsub_gui.py" --kiosk &

@@ -1,8 +1,9 @@
 # Auto detect text files and perform LF normalization
 * text=auto
 
-# Shell scripts must use LF line endings
+# Shell scripts must use LF line endings (avoids "command not found" / syntax errors on Pi)
 *.sh text eol=lf
+install.sh text eol=lf
 
 # Python files
 *.py text eol=lf

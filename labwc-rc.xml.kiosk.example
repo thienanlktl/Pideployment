@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<!--
+  labwc rc.xml snippet for kiosk: disable shortcuts that could exit the app.
+  Merge the <keybind> removals into your ~/.config/labwc/rc.xml
+  (copy from /etc/xdg/labwc/rc.xml if you don't have one).
+
+  Remove or comment out these keybindings in the <keyboard> section:
+  - A-Tab (Alt+Tab) - cycle windows
+  - A-F4 (Alt+F4) - close window
+  - C-A-BackSpace - restart compositor
+  - Any binding that opens terminal (e.g. C-A-T) or menu
+-->
+<keyboard>
+  <!-- Example: disable Alt+Tab - REMOVE or comment out in your real rc.xml:
+  <keybind key="A-Tab">
+    <action name="NextWindow"/>
+  </keybind>
+  -->
+  <!-- Example: disable Alt+F4 - REMOVE or comment out:
+  <keybind key="A-F4">
+    <action name="Close"/>
+  </keybind>
+  -->
+  <!-- Disable or change other keybinds that open terminal, menu, or exit. -->
+</keyboard>

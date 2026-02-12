@@ -22,83 +22,77 @@ import sqlite3
 import subprocess
 import logging
 import threading
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
 # Check for required dependencies before importing PyQt6
+# All packages from requirements.txt (import_name -> pip package name for messages)
+_REQUIRED_IMPORTS = {
+    "PyQt6": "PyQt6",
+    "awscrt": "awscrt",
+    "awsiot": "awsiotsdk",
+    "cryptography": "cryptography",
+    "dateutil": "python-dateutil",
+    "requests": "requests",
+    "git": "GitPython",
+}
+
+
 def check_dependencies():
-    """Check if all required dependencies are installed"""
+    """Check that we run with project venv and all required packages are installed."""
     script_dir = Path(__file__).parent.absolute()
-    
-    # Check if we're using venv Python
     venv_python_paths = [
         script_dir / "venv" / "bin" / "python3",
         script_dir / "venv" / "bin" / "python",
         script_dir / "venv" / "Scripts" / "python.exe",
     ]
-    
-    is_venv_python = False
-    for venv_path in venv_python_paths:
-        if Path(sys.executable) == venv_path:
-            is_venv_python = True
-            break
-    
-    # Also check if we're in a virtual environment (hasattr(sys, 'real_prefix') or sys.base_prefix != sys.prefix)
-    in_venv = hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix)
-    
+    venv_exists = any(p.exists() for p in venv_python_paths)
+    is_venv_python = any(Path(sys.executable).resolve() == p.resolve() for p in venv_python_paths if p.exists())
+    in_any_venv = hasattr(sys, "real_prefix") or (
+        hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix
+    )
+
+    # Require project venv when it exists (enforce "use venv")
+    if venv_exists and not is_venv_python:
+        venv_python = next((p for p in venv_python_paths if p.exists()), None)
+        print("=" * 60)
+        print("ERROR: Please run this app with the project virtual environment.")
+        print("=" * 60)
+        print(f"Current Python: {sys.executable}")
+        print(f"Use project venv:  {venv_python} iot_pubsub_gui.py")
+        if sys.platform != "win32":
+            print("Or:  ./iot-pubsub-gui-launch.sh   (from the app directory)")
+        print("\nTo set up venv and install all packages, run from the app directory:")
+        print("  ./ensure_venv.sh")
+        print("=" * 60)
+        sys.exit(1)
+
+    # Check all packages from requirements.txt
     missing_deps = []
-    required_modules = {
-        'PyQt6': 'PyQt6',
-        'awscrt': 'awscrt',
-        'awsiot': 'awsiotsdk',
-    }
-    
-    for module_name, package_name in required_modules.items():
+    for module_name, package_name in _REQUIRED_IMPORTS.items():
         try:
             __import__(module_name)
         except ImportError:
             missing_deps.append(package_name)
-    
+
     if missing_deps:
         print("=" * 60)
         print("ERROR: Missing required dependencies!")
         print("=" * 60)
-        print(f"The following packages are not installed: {', '.join(missing_deps)}")
-        print(f"\nCurrent Python: {sys.executable}")
-        
-        # Check if venv exists
-        venv_exists = any(p.exists() for p in venv_python_paths)
-        
-        if venv_exists and not (is_venv_python or in_venv):
-            print("\n⚠ WARNING: Virtual environment exists but you're using system Python!")
-            print("You should run the application using the virtual environment:")
-            print(f"  {venv_python_paths[0] if venv_python_paths[0].exists() else venv_python_paths[1]} iot_pubsub_gui.py")
-            print("\nOr activate the virtual environment first:")
-            if sys.platform == 'win32':
-                print("  venv\\Scripts\\activate")
-            else:
-                print("  source venv/bin/activate")
-            print("  python3 iot_pubsub_gui.py")
-        
-        print("\nTo install dependencies:")
-        if venv_exists and not (is_venv_python or in_venv):
+        print(f"Not installed: {', '.join(missing_deps)}")
+        print(f"Python: {sys.executable}")
+        print("\nInstall all packages (use project venv):")
+        if venv_exists:
             venv_python = next((p for p in venv_python_paths if p.exists()), None)
-            if venv_python:
-                print(f"  {venv_python} -m pip install -r requirements.txt")
+            print(f"  {venv_python} -m pip install -r requirements.txt")
         else:
-            print("  pip install -r requirements.txt")
-            if not venv_exists:
-                print("\nOr create and use a virtual environment:")
-                print("  python3 -m venv venv")
-                if sys.platform == 'win32':
-                    print("  venv\\Scripts\\activate")
-                else:
-                    print("  source venv/bin/activate")
-                print("  pip install -r requirements.txt")
-        
+            print("  python3 -m venv venv  &&  venv/bin/pip install -r requirements.txt")
+        print("\nOr run (creates venv and installs):  ./ensure_venv.sh")
         print("=" * 60)
         sys.exit(1)
+
 
 # Check dependencies before proceeding
 check_dependencies()
@@ -110,7 +104,7 @@ from PyQt6.QtWidgets import (
     QFrame, QScrollArea, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QObject, pyqtSignal, QMetaObject, Q_ARG, QThread, QTimer, QEvent
-from PyQt6.QtGui import QTextCursor, QColor
+from PyQt6.QtGui import QTextCursor, QColor, QKeyEvent
 
 from awscrt import mqtt
 from awsiot import mqtt_connection_builder
@@ -315,10 +309,19 @@ class AWSIoTPubSubGUI(QMainWindow):
         self.local_version = None
         self.script_dir = script_dir
         self._venv_python_for_restart = None  # Will be set during update process
+        self.kiosk_mode = "--kiosk" in sys.argv
         
         self.init_ui()
         self.init_database()  # Initialize database after UI so log_text exists
         self.update_status("Disconnected", False)
+        
+        # Kiosk: optional idle cursor hide (when unclutter not used)
+        if self.kiosk_mode:
+            self._last_activity = time.time()
+            self._cursor_idle_seconds = 3.0
+            self._cursor_check_timer = QTimer(self)
+            self._cursor_check_timer.timeout.connect(self._check_cursor_idle)
+            self._cursor_check_timer.start(2000)
         
         # Start update check in background after UI is ready
         # Use QTimer to call it after the event loop starts
@@ -353,6 +356,8 @@ class AWSIoTPubSubGUI(QMainWindow):
         self.fullscreen_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.fullscreen_btn.clicked.connect(self._toggle_fullscreen)
         top_bar_layout.addWidget(self.fullscreen_btn)
+        if self.kiosk_mode:
+            self.fullscreen_btn.setVisible(False)
         
         # New version available label (clickable, next to version label, initially hidden)
         self.new_version_label = QPushButton()
@@ -478,6 +483,46 @@ class AWSIoTPubSubGUI(QMainWindow):
         # Add initial log message
         self.add_log("Application started. Click 'Connect to AWS IoT' to begin.")
 
+    def _check_cursor_idle(self):
+        """In kiosk mode: hide cursor after idle, show on activity."""
+        if not getattr(self, "kiosk_mode", False):
+            return
+        elapsed = time.time() - getattr(self, "_last_activity", 0)
+        if elapsed >= self._cursor_idle_seconds:
+            self.setCursor(Qt.CursorShape.BlankCursor)
+        else:
+            self.unsetCursor()
+    
+    def keyPressEvent(self, event: QKeyEvent):
+        """In kiosk mode: disable exit keys (Escape, Alt+F4, Ctrl+Q, etc.)."""
+        if getattr(self, "kiosk_mode", False):
+            self._last_activity = time.time()
+            key = event.key()
+            mods = event.modifiers()
+            # Swallow: Escape, Alt+F4, Ctrl+Q, Ctrl+W, Ctrl+Alt+Backspace (and similar)
+            if key == Qt.Key.Key_Escape:
+                event.accept()
+                return
+            if key == Qt.Key.Key_Q and (mods & Qt.KeyboardModifier.ControlModifier):
+                event.accept()
+                return
+            if key == Qt.Key.Key_W and (mods & Qt.KeyboardModifier.ControlModifier):
+                event.accept()
+                return
+            if key == Qt.Key.Key_F4 and (mods & Qt.KeyboardModifier.AltModifier):
+                event.accept()
+                return
+            if key == Qt.Key.Key_Backspace and (mods & Qt.KeyboardModifier.ControlModifier) and (mods & Qt.KeyboardModifier.AltModifier):
+                event.accept()
+                return
+        super().keyPressEvent(event)
+    
+    def mouseMoveEvent(self, event):
+        """Track activity for kiosk cursor hide."""
+        if getattr(self, "kiosk_mode", False):
+            self._last_activity = time.time()
+        super().mouseMoveEvent(event)
+    
     def _toggle_fullscreen(self):
         """Toggle between full screen and windowed (maximized)."""
         if self.isFullScreen():
@@ -1478,7 +1523,10 @@ class AWSIoTPubSubGUI(QMainWindow):
             self.fullscreen_btn.setText("Exit fullscreen" if self.isFullScreen() else "Full screen")
 
     def closeEvent(self, event):
-        """Handle window close event"""
+        """Handle window close event. In kiosk mode, ignore close (no exit)."""
+        if getattr(self, "kiosk_mode", False):
+            event.ignore()
+            return
         if self.is_connected:
             self.disconnect_from_iot()
         event.accept()
@@ -1491,8 +1539,8 @@ def main():
 
     window = AWSIoTPubSubGUI()
     window.show()
-    # Full screen by default; use --no-fullscreen to start windowed. Restart after update passes --fullscreen.
-    use_fullscreen = "--no-fullscreen" not in sys.argv
+    # Full screen by default (and always when --kiosk). Use --no-fullscreen to start windowed.
+    use_fullscreen = "--kiosk" in sys.argv or "--no-fullscreen" not in sys.argv
     if use_fullscreen:
         # Delay so the window is mapped first; ensures full screen applies reliably after restart
         QTimer.singleShot(100, window.showFullScreen)

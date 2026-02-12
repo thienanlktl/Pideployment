@@ -1,8 +1,2 @@
-install.sh: line 16: $'\r': command not found
-: invalid option 17: set: -
-set: usage: set [-abefhkmnptuvxBCEHPT] [-o option-name] [--] [-] [arg ...]
-install.sh: line 18: $'\r': command not found
-install.sh: line 23: $'\r': command not found
-install.sh: line 30: $'\r': command not found
-install.sh: line 92: syntax error near unexpected token `$'do\r''
-'nstall.sh: line 92: `for pkg in "${REQUIRED_PACKAGES[@]}"; do
+build-deb.sh: line 30: syntax error near unexpected token `$'do\r''
+build-deb.sh: line 30: `for f in iot_pubsub_gui.py requirements.txt VERSION iot-'ubsub-gui-launch.sh iot-pubsub-gui.svg; do

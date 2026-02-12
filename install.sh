@@ -1,5 +1,6 @@
-#!/bin/bash
-grep -q $'\r' "$0" 2>/dev/null && { sed -i 's/\r$//' "$0"; exec bash "$0" "$@"; }
+﻿#!/bin/bash
+# Fix Windows CRLF so script runs on Pi (must work under sh if shebang has \r)
+cr=$(printf '\r'); grep -q "$cr" "$0" 2>/dev/null && { sed -i "s/${cr}\$//" "$0"; exec bash "$0" "$@"; }
 # =============================================================================
 # IoT PubSub GUI - One-Click Installation for Raspberry Pi
 # =============================================================================
@@ -369,9 +370,9 @@ echo "  Installation complete"
 echo "=============================================="
 echo ""
 echo "  To run $APP_NAME:"
-echo "    • From desktop: click 'IoT PubSub GUI'"
-echo "    • From menu: look for '$APP_NAME' in your applications menu"
-echo "    • From terminal:"
+echo "    â€¢ From desktop: click 'IoT PubSub GUI'"
+echo "    â€¢ From menu: look for '$APP_NAME' in your applications menu"
+echo "    â€¢ From terminal:"
 echo "        cd $INSTALL_DIR"
 echo "        $VENV/bin/python3 iot_pubsub_gui.py"
 echo ""
