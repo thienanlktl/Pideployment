@@ -4,6 +4,8 @@ This document lists **every step you must run manually**, in order, to complete 
 
 **Prerequisites:** Raspberry Pi 4/5, Raspberry Pi OS 64-bit Bookworm (or newer), Wayland session with labwc. Log in as user `pi` (or adjust paths).
 
+**Alternative:** To run all steps automatically, use the one-shot script: **`./setup-kiosk.sh`** (see [KIOSK_SETUP.md](KIOSK_SETUP.md#one-shot-script-setup-kiosksh)).
+
 ---
 
 ## Phase 1: Get the app on the Pi

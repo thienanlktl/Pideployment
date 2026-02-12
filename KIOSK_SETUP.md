@@ -4,6 +4,43 @@ Turn a Raspberry Pi running **Raspberry Pi OS 64-bit Bookworm+** with **Wayland*
 
 **For a detailed, step-by-step manual checklist**, see **[KIOSK_MANUAL_STEPS.md](KIOSK_MANUAL_STEPS.md)** — every command and action to run, in order.
 
+**To run all steps automatically (one script):** use **[setup-kiosk.sh](setup-kiosk.sh)** — see "One-shot script" below.
+
+---
+
+## One-shot script (setup-kiosk.sh)
+
+Run everything in one go (after the app is at `/home/pi/iot-pubsub-gui` or your chosen path):
+
+```bash
+cd /home/pi/iot-pubsub-gui
+chmod +x setup-kiosk.sh
+./setup-kiosk.sh
+```
+
+Options:
+
+- `--app-dir DIR` — App directory (default: `/home/pi/iot-pubsub-gui`).
+- `--no-raspi-config` — Skip autologin / raspi-config.
+- `--no-rcxml` — Skip editing labwc rc.xml (you can edit it manually later).
+- `--overlayfs` — Enable overlay file system (read-only root).
+- `--ssh-key-only` — Disable SSH password authentication (ensure key login works first).
+- `--reboot` — Reboot at the end.
+- `--clone` — Clone the repo to `--app-dir` if it does not exist.
+
+Example (full setup and reboot):
+
+```bash
+./setup-kiosk.sh --reboot
+```
+
+Example (custom path, no reboot):
+
+```bash
+./setup-kiosk.sh --app-dir /home/pi/my-kiosk
+# then: sudo reboot
+```
+
 ---
 
 ## Plan (10 steps)
