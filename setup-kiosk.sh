@@ -7,6 +7,7 @@ cr=$(printf '\r'); grep -q "$cr" "$0" 2>/dev/null && { sed -i "s/${cr}\$//" "$0"
 # =============================================================================
 # Runs on Raspberry Pi OS 64-bit Bookworm+ with Wayland/labwc.
 # Usage: bash setup-kiosk.sh [OPTIONS]
+#        (Use 'bash' not 'sh'; ensure file has Unix line endings (LF) if you see line 39 errors.)
 #
 # Options:
 #   --app-dir DIR       App directory (default: /home/pi/iot-pubsub-gui)
@@ -37,7 +38,15 @@ CLONE_HTTPS=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --app-dir)      APP_DIR="$2"; shift 2 ;;
+        --app-dir)
+            if [ -z "${2:-}" ] || [ "${2#-}" != "$2" ]; then
+                echo "ERROR: --app-dir requires a directory path."
+                echo "Usage: $0 [--app-dir DIR] [--no-raspi-config] [--no-rcxml] [--overlayfs] [--ssh-key-only] [--reboot] [--clone] [--clone-https]"
+                exit 1
+            fi
+            APP_DIR="$2"
+            shift 2
+            ;;
         --no-raspi-config) DO_RASPI_CONFIG=0; shift ;;
         --no-rcxml)     DO_RCXML=0; shift ;;
         --overlayfs)    DO_OVERLAYFS=1; shift ;;
