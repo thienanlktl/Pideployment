@@ -4,39 +4,82 @@ Turn a Raspberry Pi running **Raspberry Pi OS 64-bit Bookworm+** with **Wayland*
 
 **For a detailed, step-by-step manual checklist**, see **[KIOSK_MANUAL_STEPS.md](KIOSK_MANUAL_STEPS.md)** — every command and action to run, in order.
 
-**To run all steps automatically (one script):** use **[setup-kiosk.sh](setup-kiosk.sh)** — see "One-shot script" below.
+**To run all steps automatically (one script):** use **[setup-kiosk.sh](setup-kiosk.sh)** — see "How to apply setup-kiosk.sh" and "One-shot script" below.
+
+---
+
+## How to apply setup-kiosk.sh
+
+### Fresh machine (no code yet): clone via SSH using existing keys in `~/.ssh`
+
+Use this when the Pi is new and you want the script to **pull the code** using the SSH key already in `~/.ssh` (e.g. you copied your private key to the Pi or generated one and added the public key to GitHub).
+
+1. **Ensure SSH keys are on the Pi** (one of these):
+   - **Copy from another machine:** copy your existing `id_ed25519` and `id_ed25519.pub` (or `id_rsa` / `id_rsa.pub`) into `/home/pi/.ssh/` and run `chmod 600 /home/pi/.ssh/id_ed25519`.
+   - **Or generate on the Pi:** run `ssh-keygen -t ed25519 -N "" -f /home/pi/.ssh/id_ed25519`, then add the contents of `/home/pi/.ssh/id_ed25519.pub` to GitHub (Settings → SSH and GPG keys → New SSH key).
+
+2. **Get the setup script onto the Pi** (do **not** put it inside the app directory — `--clone` will create the app directory). For example:
+   - **Option A — One-line download** (run on the Pi):
+     ```bash
+     curl -sL https://raw.githubusercontent.com/thienanlktl/Pideployment/main/setup-kiosk.sh -o /home/pi/setup-kiosk.sh
+     chmod +x /home/pi/setup-kiosk.sh
+     ```
+   - **Option B:** Copy `setup-kiosk.sh` via USB/SCP to `/home/pi/setup-kiosk.sh` and `chmod +x` it.
+
+3. **Run the script with `--clone`** so it clones the repo via SSH (using `~/.ssh`) into `/home/pi/iot-pubsub-gui` and then does the rest:
+   ```bash
+   cd /home/pi
+   ./setup-kiosk.sh --clone --reboot
+   ```
+   The script clones `git@github.com:thienanlktl/Pideployment.git` (SSH) into `/home/pi/iot-pubsub-gui`, then installs packages, venv, labwc autostart, rc.xml, and raspi-config autologin. With `--reboot` it reboots at the end.
+
+   For a **private** repo, your GitHub account must have access and the **public** key in `~/.ssh` must be added to that account (or to a deploy key for the repo).
+
+4. **If you don't have an SSH key on the Pi** and the repo is **public**, use HTTPS instead:
+   ```bash
+   ./setup-kiosk.sh --clone-https --reboot
+   ```
+
+### Machine that already has the app code
+
+If the project is already at `/home/pi/iot-pubsub-gui` (e.g. you cloned or copied it yourself), run the script **without** `--clone`:
+
+```bash
+cd /home/pi/iot-pubsub-gui
+chmod +x setup-kiosk.sh
+./setup-kiosk.sh --reboot
+```
 
 ---
 
 ## One-shot script (setup-kiosk.sh)
 
-Run everything in one go (after the app is at `/home/pi/iot-pubsub-gui` or your chosen path):
+Run all kiosk steps in one go. Use `--clone` on a fresh machine so the script pulls the code via SSH from `~/.ssh`; otherwise the app directory must already exist.
 
-```bash
-cd /home/pi/iot-pubsub-gui
-chmod +x setup-kiosk.sh
-./setup-kiosk.sh
-```
-
-Options:
+**Options:**
 
 - `--app-dir DIR` — App directory (default: `/home/pi/iot-pubsub-gui`).
+- `--clone` — Clone repo into `--app-dir` using **SSH** (uses existing keys in `~/.ssh`). Requires public key added to GitHub/GitLab.
+- `--clone-https` — Same as `--clone` but use HTTPS (no SSH key; use for public repo).
 - `--no-raspi-config` — Skip autologin / raspi-config.
 - `--no-rcxml` — Skip editing labwc rc.xml (you can edit it manually later).
 - `--overlayfs` — Enable overlay file system (read-only root).
 - `--ssh-key-only` — Disable SSH password authentication (ensure key login works first).
 - `--reboot` — Reboot at the end.
-- `--clone` — Clone the repo to `--app-dir` if it does not exist.
 
-Example (full setup and reboot):
+**Examples:**
 
 ```bash
+# Fresh Pi: clone via SSH (key in ~/.ssh) then setup and reboot
+./setup-kiosk.sh --clone --reboot
+
+# Fresh Pi: clone via HTTPS (no key needed, public repo)
+./setup-kiosk.sh --clone-https --reboot
+
+# App already present: setup and reboot
 ./setup-kiosk.sh --reboot
-```
 
-Example (custom path, no reboot):
-
-```bash
+# Custom path, no reboot
 ./setup-kiosk.sh --app-dir /home/pi/my-kiosk
 # then: sudo reboot
 ```

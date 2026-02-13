@@ -1,18 +1,58 @@
 # Kiosk Setup: Detailed Manual Steps
 
-This document lists **every step you must run manually**, in order, to complete the full Raspberry Pi kiosk setup (Wayland / labwc). Use it as a checklist.
+This document lists **every step you must run manually**, in order, to complete the full Raspberry Pi kiosk setup (Wayland / labwc). Use it as a checklist when you prefer to run steps by hand, or to understand what **[setup-kiosk.sh](setup-kiosk.sh)** does under the hood.
 
 **Prerequisites:** Raspberry Pi 4/5, Raspberry Pi OS 64-bit Bookworm (or newer), Wayland session with labwc. Log in as user `pi` (or adjust paths).
 
-**Alternative:** To run all steps automatically, use the one-shot script: **`./setup-kiosk.sh`** (see [KIOSK_SETUP.md](KIOSK_SETUP.md#one-shot-script-setup-kiosksh)).
+---
+
+## Use setup-kiosk.sh (recommended)
+
+The script **[setup-kiosk.sh](setup-kiosk.sh)** automates Phases 2–6 below (and optionally SSH key-only). See [KIOSK_SETUP.md — How to apply setup-kiosk.sh](KIOSK_SETUP.md#how-to-apply-setup-kiosksh) for full details.
+
+**Fresh Pi (no code yet) — clone via SSH using keys in `~/.ssh`:**
+
+1. Put your SSH key in `~/.ssh` (copy from another machine or generate and add the public key to GitHub).
+2. Download the script (do **not** put it inside the app directory):
+   ```bash
+   curl -sL https://raw.githubusercontent.com/thienanlktl/Pideployment/main/setup-kiosk.sh -o /home/pi/setup-kiosk.sh
+   chmod +x /home/pi/setup-kiosk.sh
+   ```
+3. Run with `--clone` so it pulls the repo via SSH and runs all setup:
+   ```bash
+   cd /home/pi
+   ./setup-kiosk.sh --clone --reboot
+   ```
+   For a public repo without an SSH key on the Pi: use `./setup-kiosk.sh --clone-https --reboot`.
+
+**App already at `/home/pi/iot-pubsub-gui`:**
+
+```bash
+cd /home/pi/iot-pubsub-gui
+chmod +x setup-kiosk.sh
+./setup-kiosk.sh --reboot
+```
+
+**What setup-kiosk.sh does:** system packages (Phase 2), venv + Python deps (Phase 3), labwc autostart (Phase 4), labwc rc.xml — remove Alt+Tab/Alt+F4 (Phase 5), raspi-config autologin (Phase 6). Optional: `--overlayfs`, `--ssh-key-only`. Phases 7 (desktop/taskbar) and 8 (SSH) are manual if needed.
 
 ---
 
 ## Phase 1: Get the app on the Pi
 
+Use this phase only if you are **not** using `setup-kiosk.sh --clone`. Otherwise the script does the clone for you.
+
 ### Step 1.1 – Clone or copy the repository
 
-**Option A – Clone with git (recommended):**
+**Option A – Use setup-kiosk.sh to clone (SSH from ~/.ssh):**
+
+- Put your private key in `~/.ssh`, download `setup-kiosk.sh` to `/home/pi`, then run:
+  ```bash
+  cd /home/pi
+  ./setup-kiosk.sh --clone --reboot
+  ```
+  This creates `/home/pi/iot-pubsub-gui` and runs all later phases. Skip to Phase 9 (reboot) after the script finishes.
+
+**Option B – Clone with git manually:**
 
 ```bash
 cd /home/pi
@@ -20,16 +60,16 @@ git clone https://github.com/thienanlktl/Pideployment.git iot-pubsub-gui
 cd iot-pubsub-gui
 ```
 
-If the repo is private and you use SSH:
+If the repo is private, use SSH (keys in `~/.ssh`):
 
 ```bash
 git clone git@github.com:thienanlktl/Pideployment.git iot-pubsub-gui
 cd iot-pubsub-gui
 ```
 
-**Option B – Copy from USB or another machine:**
+**Option C – Copy from USB or another machine:**
 
-- Copy the whole project folder (including `iot_pubsub_gui.py`, `requirements.txt`, `ensure_venv.sh`, `monitor.sh`, `labwc-autostart.example`, certificates, etc.) to `/home/pi/iot-pubsub-gui`.
+- Copy the whole project folder (including `iot_pubsub_gui.py`, `requirements.txt`, `ensure_venv.sh`, `monitor.sh`, `setup-kiosk.sh`, `labwc-autostart.example`, certificates, etc.) to `/home/pi/iot-pubsub-gui`.
 
 Then:
 
@@ -45,11 +85,13 @@ cd /home/pi/iot-pubsub-gui
 ls -la /home/pi/iot-pubsub-gui
 ```
 
-You should see at least: `iot_pubsub_gui.py`, `requirements.txt`, `ensure_venv.sh`, `monitor.sh`, `labwc-autostart.example`, and your certificate files (e.g. `*.pem`, `*.crt`, `*.key`).
+You should see at least: `iot_pubsub_gui.py`, `requirements.txt`, `ensure_venv.sh`, `monitor.sh`, `setup-kiosk.sh`, `labwc-autostart.example`, and your certificate files (e.g. `*.pem`, `*.crt`, `*.key`).
 
 ---
 
 ## Phase 2: System packages
+
+*(setup-kiosk.sh does this: `apt-get update` and installs unclutter, python3, python3-pip, python3-venv, python3-dev.)*
 
 ### Step 2.1 – Update package list
 
@@ -76,6 +118,8 @@ You can skip this if you only run `ensure_venv.sh` and already have `python3` an
 ---
 
 ## Phase 3: Virtual environment and Python packages
+
+*(setup-kiosk.sh does this: `chmod +x ensure_venv.sh monitor.sh` and runs `./ensure_venv.sh`.)*
 
 ### Step 3.1 – Go to app directory
 
@@ -110,6 +154,8 @@ chmod +x ensure_venv.sh monitor.sh
 
 ## Phase 4: labwc autostart (start app on login)
 
+*(setup-kiosk.sh does this: creates `~/.config/labwc/autostart` with the correct APP_DIR.)*
+
 ### Step 4.1 – Create labwc config directory
 
 ```bash
@@ -141,6 +187,8 @@ chmod +x ~/.config/labwc/autostart
 ---
 
 ## Phase 5: labwc rc.xml (disable escape shortcuts)
+
+*(setup-kiosk.sh does this: copies system rc.xml and removes A-Tab and A-F4 keybind blocks with sed. Use `--no-rcxml` to skip.)*
 
 ### Step 5.1 – Copy system rc.xml to your config (if you don’t have one yet)
 
@@ -186,6 +234,8 @@ Save and exit: Ctrl+O, Enter, Ctrl+X.
 ---
 
 ## Phase 6: raspi-config (autologin and optional overlay)
+
+*(setup-kiosk.sh does this: `raspi-config nonint do_boot_behaviour B4` for Desktop Autologin. Use `--overlayfs` for overlay; use `--no-raspi-config` to skip.)*
 
 ### Step 6.1 – Open raspi-config
 
@@ -256,6 +306,8 @@ Save and exit. This prevents the desktop from drawing icons. (Adjust the filenam
 
 ## Phase 8: (Optional) SSH key-only and services
 
+*(setup-kiosk.sh can do this with `--ssh-key-only`. Ensure key login works before using.)*
+
 ### Step 8.1 – Backup sshd_config
 
 ```bash
@@ -325,7 +377,9 @@ You should see only the fullscreen IoT Pub/Sub GUI. The monitor will restart the
 
 ## Quick reference: minimal command sequence
 
-If you’ve already cloned the repo to `/home/pi/iot-pubsub-gui`, this is the minimal sequence:
+**Preferred — use [setup-kiosk.sh](setup-kiosk.sh):** Fresh Pi (key in `~/.ssh`): download to `/home/pi/setup-kiosk.sh`, then `cd /home/pi && ./setup-kiosk.sh --clone --reboot`. App already at `/home/pi/iot-pubsub-gui`: `cd /home/pi/iot-pubsub-gui && ./setup-kiosk.sh --reboot`. See "Use setup-kiosk.sh" at the top.
+
+**Manual sequence** — if you’ve already cloned the repo to `/home/pi/iot-pubsub-gui`, this is the minimal sequence:
 
 ```bash
 sudo apt-get update && sudo apt-get install -y unclutter

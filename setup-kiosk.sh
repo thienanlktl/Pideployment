@@ -15,18 +15,25 @@ cr=$(printf '\r'); grep -q "$cr" "$0" 2>/dev/null && { sed -i "s/${cr}\$//" "$0"
 #   --overlayfs         Enable overlay file system (read-only root)
 #   --ssh-key-only      Disable SSH password authentication (use key only)
 #   --reboot            Reboot at the end
-#   --clone             Clone repo to app-dir if it does not exist (from main)
+#   --clone             Clone repo to app-dir if it does not exist (uses SSH from ~/.ssh)
+#   --clone-https       Same as --clone but use HTTPS (no SSH key needed; use for public repo)
+#
+# Clone uses: git@github.com:thienanlktl/Pideployment.git (SSH). Ensure ~/.ssh has your
+# private key and the public key is added to GitHub/GitLab so --clone works on a fresh Pi.
 # =============================================================================
 
 set -e
 
 APP_DIR="${APP_DIR:-/home/pi/iot-pubsub-gui}"
+REPO_URL_SSH="${REPO_URL_SSH:-git@github.com:thienanlktl/Pideployment.git}"
+REPO_URL_HTTPS="${REPO_URL_HTTPS:-https://github.com/thienanlktl/Pideployment.git}"
 DO_RASPI_CONFIG=1
 DO_RCXML=1
 DO_OVERLAYFS=0
 DO_SSH_KEY_ONLY=0
 DO_REBOOT=0
 DO_CLONE=0
+CLONE_HTTPS=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -37,7 +44,8 @@ while [ $# -gt 0 ]; do
         --ssh-key-only) DO_SSH_KEY_ONLY=1; shift ;;
         --reboot)       DO_REBOOT=1; shift ;;
         --clone)        DO_CLONE=1; shift ;;
-        *) echo "Unknown option: $1"; echo "Usage: $0 [--app-dir DIR] [--no-raspi-config] [--no-rcxml] [--overlayfs] [--ssh-key-only] [--reboot] [--clone]"; exit 1 ;;
+        --clone-https)  DO_CLONE=1; CLONE_HTTPS=1; shift ;;
+        *) echo "Unknown option: $1"; echo "Usage: $0 [--app-dir DIR] [--no-raspi-config] [--no-rcxml] [--overlayfs] [--ssh-key-only] [--reboot] [--clone] [--clone-https]"; exit 1 ;;
     esac
 done
 
@@ -72,20 +80,35 @@ info "App directory: $APP_DIR"
 echo ""
 
 # -----------------------------------------------------------------------------
-# Optional: clone repo if app dir does not exist
+# Optional: clone repo if app dir does not exist (SSH from ~/.ssh or HTTPS)
 # -----------------------------------------------------------------------------
 if [ "$DO_CLONE" -eq 1 ] && [ ! -d "$APP_DIR/.git" ]; then
-    info "Cloning repository to $APP_DIR ..."
     parent="$(dirname "$APP_DIR")"
     mkdir -p "$parent"
     if [ -d "$APP_DIR" ]; then
         err "Directory $APP_DIR exists but is not a git repo. Remove it or use without --clone."
         exit 1
     fi
-    git clone -b main https://github.com/thienanlktl/Pideployment.git "$APP_DIR" || {
-        err "Clone failed. Use SSH or copy files manually to $APP_DIR"
-        exit 1
-    }
+    if [ "$CLONE_HTTPS" -eq 1 ]; then
+        info "Cloning repository (HTTPS) to $APP_DIR ..."
+        git clone -b main "$REPO_URL_HTTPS" "$APP_DIR" || {
+            err "Clone failed. Check network and repo URL: $REPO_URL_HTTPS"
+            exit 1
+        }
+    else
+        info "Cloning repository (SSH, using keys from ~/.ssh) to $APP_DIR ..."
+        if [ ! -d "$HOME/.ssh" ]; then
+            err "No ~/.ssh directory. Create one and add your private key, or use --clone-https."
+            exit 1
+        fi
+        if ! ls "$HOME/.ssh"/id_*.pub 1>/dev/null 2>&1; then
+            warn "No public key found in ~/.ssh (id_ed25519.pub, id_rsa.pub, etc.). Add your key and ensure the public key is added to GitHub/GitLab, or use --clone-https."
+        fi
+        git clone -b main "$REPO_URL_SSH" "$APP_DIR" || {
+            err "Clone failed. Ensure: (1) private key is in ~/.ssh, (2) public key is added to GitHub/GitLab, (3) ssh -T git@github.com works. Or use --clone-https for public repo."
+            exit 1
+        }
+    fi
     ok "Repository cloned."
 fi
 
